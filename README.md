@@ -78,13 +78,16 @@ mismatched, or cross-version asset.
 
 On a Windows runner it installs the pinned .NET 10 SDK and Inno Setup, checks
 the caller-supplied hashes, rejects source/debug material, verifies the
-Microsoft Authenticode signature on the VC++ runtime, runs the precompiled
-Platform tests with `dotnet vstest`, runs the app self-tests, and performs a
-silent install/startup-registry/self-test/uninstall smoke test. It downloads
-the pinned Whisper model and JFK sample, verifies their byte counts and
-hashes, then runs the known-phrase and silence inference checks. The output
-artifact contains the original portable ZIP, the freshly compiled setup
-executable, and text/JSON SHA-256 manifests.
+Microsoft Authenticode signature and pinned metadata/hash on the VC++ runtime,
+and independently parses the PE headers of `VoiceDictation.exe` plus all eight
+Whisper DLLs, requiring AMD64 machine `0x8664`. The VC++ bootstrap is explicitly
+excluded from that architecture check because Microsoft's signed installer is
+PE32. The workflow runs the precompiled Platform tests with `dotnet vstest`,
+runs the app self-tests, and performs a silent install/startup-registry,
+self-test/uninstall smoke test. It downloads the pinned Whisper model and JFK
+sample, verifies their byte counts and hashes, then runs the known-phrase and
+silence inference checks. The output artifact contains the original portable
+ZIP, the freshly compiled setup executable, and text/JSON SHA-256 manifests.
 
 The hosted runner cannot prove every physical microphone, global shortcut,
 foreground editor, UI Automation, or user security-policy combination. This

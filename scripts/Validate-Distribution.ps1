@@ -93,6 +93,42 @@ function Assert-ExecutableVersion([string]$Path, [string]$ExpectedVersion, [stri
     }
 }
 
+function Assert-PeAmd64([string]$Path, [string]$Label) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        Fail "$Label is missing: $Path"
+    }
+    $stream = $null
+    $reader = $null
+    try {
+        $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+        if ($stream.Length -lt 64) {
+            Fail "$Label is too small to be a PE image."
+        }
+        $reader = [System.IO.BinaryReader]::new($stream)
+        if ($reader.ReadUInt16() -ne 0x5A4D) {
+            Fail "$Label is not an MZ executable."
+        }
+        $stream.Position = 0x3C
+        $peOffset = [int64]$reader.ReadInt32()
+        if ($peOffset -lt 64 -or $peOffset -gt ($stream.Length - 24)) {
+            Fail "$Label has an invalid PE header offset."
+        }
+        $stream.Position = $peOffset
+        if ($reader.ReadUInt32() -ne 0x00004550) {
+            Fail "$Label is missing the PE signature."
+        }
+        $machine = $reader.ReadUInt16()
+        if ($machine -ne 0x8664) {
+            Fail "$Label has PE machine 0x$('{0:X4}' -f $machine); expected AMD64 0x8664."
+        }
+    } catch {
+        Fail "$Label PE header could not be validated: $($_.Exception.Message)"
+    } finally {
+        if ($null -ne $reader) { $reader.Dispose() }
+        elseif ($null -ne $stream) { $stream.Dispose() }
+    }
+}
+
 function Get-VcRedistPin([string]$ExpectedVersion) {
     if (-not $vcRedistPins.ContainsKey($ExpectedVersion)) {
         Fail "No reviewed VC++ redist pin exists for release '$ExpectedVersion'; add a new exact pin before packaging it."
@@ -349,6 +385,14 @@ function Assert-PortableArchive([string]$Path, [string]$ExpectedVersion, [pscust
         }
     }
     Assert-ExecutableVersion $exe $ExpectedVersion 'Portable VoiceDictation.exe'
+    Assert-PeAmd64 $exe 'Portable VoiceDictation.exe'
+    foreach ($relative in $expectedRuntime) {
+        $runtimeDll = Join-Path $portableStage ($relative.Replace('/', '\'))
+        Assert-PeAmd64 $runtimeDll "Portable Whisper runtime $relative"
+    }
+    # vc_redist.x64.exe is intentionally not checked here: Microsoft's
+    # bootstrap is a signed PE32 (i386) installer, while the app and Whisper
+    # native payload are the x64 components this validator claims to ship.
     Write-Host "Portable archive structure, notices, Whisper runtimes, executable set, and VC++ signature passed."
     return $exe
 }
