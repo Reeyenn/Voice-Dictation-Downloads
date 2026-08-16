@@ -285,12 +285,13 @@ echo "macOS app launch policy and runtime start passed for $(uname -m)."
 
 VALIDATION_DIR="$VALIDATION_ROOT/Voice-Dictation-MacValidation"
 VALIDATION_EXE="$VALIDATION_DIR/VoiceDictationMacValidation"
+VALIDATION_RUNNER="$VALIDATION_DIR/run-mac-validation.sh"
 assert_universal2 "$VALIDATION_EXE" 'Swift validation entrypoint'
-chmod +x "$VALIDATION_EXE"
+chmod +x "$VALIDATION_EXE" "$VALIDATION_RUNNER"
 
 validation_log="$WORK_ROOT/mac-validation.log"
 set +e
-(cd "$VALIDATION_DIR" && "$VALIDATION_EXE" --max-latency-seconds 5 --max-wer 0.35) 2>&1 | tee "$validation_log"
+(cd "$VALIDATION_DIR" && ./run-mac-validation.sh --max-latency-seconds 5 --max-wer 0.35) 2>&1 | tee "$validation_log"
 validation_status=${PIPESTATUS[0]}
 set -e
 [[ "$validation_status" -eq 0 ]] || fail "Swift validation bundle exited with $validation_status"

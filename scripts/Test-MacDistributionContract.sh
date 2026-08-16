@@ -42,6 +42,8 @@ done
 require_text "$VALIDATOR" 'clear_workflow_tokens'
 require_text "$VALIDATOR" 'unset GITHUB_TOKEN GH_TOKEN'
 require_text "$VALIDATOR" 'TOKEN AUTH_HEADER'
+require_text "$VALIDATOR" "(cd \"\$VALIDATION_DIR\" && ./run-mac-validation.sh"
+require_text "$VALIDATOR" 'PIPESTATUS[0]'
 
 if grep -Eiq 'swift[[:space:]]+test|xcodebuild|git[[:space:]]+(clone|fetch)|Voice-Dictation\.git' "$WORKFLOW" "$VALIDATOR"; then
   fail 'binary-only validation must not build or fetch private source'
@@ -52,10 +54,16 @@ fi
 if grep -Fq 'run-intel-validation.sh' "$VALIDATOR"; then
   fail 'macOS validation launcher must be architecture-neutral'
 fi
+if grep -Fq "\"\$VALIDATION_EXE\" --max-latency-seconds" "$VALIDATOR"; then
+  fail 'macOS validator must invoke the packaged launcher, not the binary directly'
+fi
+if grep -Fq "&& \"\$VALIDATION_EXE\"" "$VALIDATOR"; then
+  fail 'macOS validator must not execute the validation binary outside its packaged launcher'
+fi
 
 scrub_line="$(grep -n '^clear_workflow_tokens$' "$VALIDATOR" | tail -n 1 | cut -d: -f1)"
 open_line="$(grep -n '^open -n ' "$VALIDATOR" | head -n 1 | cut -d: -f1)"
-runner_line="$(grep -n 'VALIDATION_EXE.*--max-latency-seconds' "$VALIDATOR" | head -n 1 | cut -d: -f1)"
+runner_line="$(grep -n 'run-mac-validation\.sh.*--max-latency-seconds' "$VALIDATOR" | head -n 1 | cut -d: -f1)"
 if [[ -z "$scrub_line" || -z "$open_line" || -z "$runner_line" || "$scrub_line" -ge "$open_line" || "$scrub_line" -ge "$runner_line" ]]; then
   fail 'token scrub must occur after downloads and before app or validator launch'
 fi
