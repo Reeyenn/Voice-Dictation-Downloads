@@ -2,7 +2,7 @@ Voice Dictation Windows beta - .NET self-contained runtime notices
 
 This file is a repository-owned copy of the official .NET 10 runtime
 ThirdPartyNotices.txt shipped with the pinned .NET runtime pack used by
-the Windows build (Microsoft.NETCore.App 10.0.11 / SDK 10.0.100 family).
+the Windows build (Microsoft.NETCore.App 10.0.11 / SDK 10.0.400).
 The runtime is redistributed self-contained; no runtime is downloaded at
 package time. Source and version provenance:
 https://github.com/dotnet/runtime/tree/v10.0.11

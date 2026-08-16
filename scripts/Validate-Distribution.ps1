@@ -24,6 +24,7 @@ $output = [System.IO.Path]::GetFullPath($OutputRoot)
 $downloadRoot = Join-Path $env:TEMP "voice-dictation-bootstrap-$([Guid]::NewGuid().ToString('N'))"
 $portableStage = Join-Path $downloadRoot "portable"
 $testsStage = Join-Path $downloadRoot "platform-tests"
+$testResultsRoot = Join-Path $downloadRoot "test-results"
 $installRoot = Join-Path $env:TEMP "voice-dictation-install-$([Guid]::NewGuid().ToString('N'))"
 $modelPath = Join-Path $downloadRoot "ggml-small.en.bin"
 $samplePath = Join-Path $downloadRoot "whisper-jfk.wav"
@@ -37,6 +38,17 @@ $sampleCommit = "1fe009caeda75f69bc864d6370b10674e45a92bd"
 $sampleUrl = "https://raw.githubusercontent.com/ggerganov/whisper.cpp/$sampleCommit/samples/jfk.wav"
 $sampleBytes = 352078L
 $sampleSha256 = "59dfb9a4acb36fe2a2affc14bacbee2920ff435cb13cc314a08c13f66ba7860e"
+
+# The public bootstrap is deliberately fail-closed on the native prerequisite:
+# a new release must add and review a new pin before it can be packaged.
+$vcRedistPins = @{
+    '0.7.0' = [pscustomobject]@{
+        Sha256 = 'cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b'
+        ProductVersion = '14.44.35211.0'
+        ProductName = 'Microsoft Visual C++ 2015-2022 Redistributable (x64) - 14.44.35211'
+        OriginalFilename = 'VC_redist.x64.exe'
+    }
+}
 
 function Fail([string]$Message) {
     throw "Distribution validation failed: $Message"
@@ -53,6 +65,39 @@ function Assert-Version([string]$Value) {
     if ($Value -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') {
         Fail "Version '$Value' is not a valid versioned release identifier."
     }
+}
+
+function Get-ExpectedFileVersion([string]$ExpectedVersion) {
+    $match = [System.Text.RegularExpressions.Regex]::Match(
+        $ExpectedVersion,
+        '^(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)(?:[-+][0-9A-Za-z.-]+)?$'
+    )
+    if (-not $match.Success) {
+        Fail "Version '$ExpectedVersion' cannot be mapped to a Windows four-part file version."
+    }
+    return "$($match.Groups['major'].Value).$($match.Groups['minor'].Value).$($match.Groups['patch'].Value).0"
+}
+
+function Assert-ExecutableVersion([string]$Path, [string]$ExpectedVersion, [string]$Label) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        Fail "$Label is missing: $Path"
+    }
+    $expectedFileVersion = Get-ExpectedFileVersion $ExpectedVersion
+    $actualFileVersion = [string](Get-Item -LiteralPath $Path).VersionInfo.FileVersion
+    if ([string]::IsNullOrWhiteSpace($actualFileVersion)) {
+        Fail "$Label has no file version metadata; expected exactly $expectedFileVersion."
+    }
+    $actualFileVersion = $actualFileVersion.Trim()
+    if ($actualFileVersion -cne $expectedFileVersion) {
+        Fail "$Label file version '$actualFileVersion' does not exactly match expected '$expectedFileVersion'."
+    }
+}
+
+function Get-VcRedistPin([string]$ExpectedVersion) {
+    if (-not $vcRedistPins.ContainsKey($ExpectedVersion)) {
+        Fail "No reviewed VC++ redist pin exists for release '$ExpectedVersion'; add a new exact pin before packaging it."
+    }
+    return $vcRedistPins[$ExpectedVersion]
 }
 
 function Assert-AssetName([string]$Name, [string]$Label, [string]$ExpectedVersion) {
@@ -77,6 +122,29 @@ function Assert-FileSha256([string]$Path, [string]$Expected, [string]$Label) {
     }
     if ((Get-Item -LiteralPath $Path).Length -le 0) {
         Fail "$Label is empty."
+    }
+}
+
+function Clear-WorkflowTokens {
+    # Release API calls are completed before this function is called. Clearing
+    # both conventional variables prevents a downloaded/precompiled child
+    # process from inheriting a repository token through either name.
+    foreach ($name in @('GITHUB_TOKEN', 'GH_TOKEN')) {
+        [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+    }
+}
+
+function Restore-RegistryRunValue(
+    [string]$RunKeyPath,
+    [string]$RunValueName,
+    [bool]$WasPresent,
+    [string]$OriginalValue
+) {
+    if ($WasPresent) {
+        New-Item -Path $RunKeyPath -Force | Out-Null
+        New-ItemProperty -LiteralPath $RunKeyPath -Name $RunValueName -PropertyType String -Value $OriginalValue -Force | Out-Null
+    } else {
+        Remove-ItemProperty -LiteralPath $RunKeyPath -Name $RunValueName -ErrorAction SilentlyContinue
     }
 }
 
@@ -192,7 +260,7 @@ function Download-ReleaseAsset(
     return $Destination
 }
 
-function Assert-PortableArchive([string]$Path, [string]$ExpectedVersion) {
+function Assert-PortableArchive([string]$Path, [string]$ExpectedVersion, [pscustomobject]$VcRedistPin) {
     $entries = @(Get-ZipEntries $Path | Where-Object { -not $_.IsDirectory })
     $required = @(
         'VoiceDictation.exe',
@@ -259,6 +327,7 @@ function Assert-PortableArchive([string]$Path, [string]$ExpectedVersion) {
     Expand-Archive -LiteralPath $Path -DestinationPath $portableStage -Force
     $exe = Join-Path $portableStage 'VoiceDictation.exe'
     $runtime = Join-Path $portableStage 'vc_redist.x64.exe'
+    Assert-FileSha256 $runtime $VcRedistPin.Sha256 'Bundled VC++ redist'
     $signature = Get-AuthenticodeSignature -LiteralPath $runtime
     if ($signature.Status -ne 'Valid' -or $null -eq $signature.SignerCertificate) {
         Fail "vc_redist.x64.exe did not pass Authenticode validation."
@@ -268,12 +337,70 @@ function Assert-PortableArchive([string]$Path, [string]$ExpectedVersion) {
     if ($subject -notmatch '(?i)Microsoft' -and $issuer -notmatch '(?i)Microsoft') {
         Fail "vc_redist.x64.exe is signed, but not by a Microsoft certificate."
     }
-    $fileVersion = (Get-Item -LiteralPath $exe).VersionInfo.FileVersion
-    if (-not [string]::IsNullOrWhiteSpace($fileVersion) -and $fileVersion -notmatch [System.Text.RegularExpressions.Regex]::Escape($ExpectedVersion)) {
-        Fail "VoiceDictation.exe file version '$fileVersion' does not match release '$ExpectedVersion'."
+    $vcVersionInfo = (Get-Item -LiteralPath $runtime).VersionInfo
+    $vcMetadata = @(
+        [pscustomobject]@{ Name = 'ProductVersion'; Expected = $VcRedistPin.ProductVersion; Actual = [string]$vcVersionInfo.ProductVersion }
+        [pscustomobject]@{ Name = 'ProductName'; Expected = $VcRedistPin.ProductName; Actual = [string]$vcVersionInfo.ProductName }
+        [pscustomobject]@{ Name = 'OriginalFilename'; Expected = $VcRedistPin.OriginalFilename; Actual = [string]$vcVersionInfo.OriginalFilename }
+    )
+    foreach ($metadata in $vcMetadata) {
+        if (-not [string]::IsNullOrWhiteSpace($metadata.Actual) -and $metadata.Actual.Trim() -cne $metadata.Expected) {
+            Fail "vc_redist.x64.exe $($metadata.Name) '$($metadata.Actual)' does not exactly match expected '$($metadata.Expected)'."
+        }
     }
+    Assert-ExecutableVersion $exe $ExpectedVersion 'Portable VoiceDictation.exe'
     Write-Host "Portable archive structure, notices, Whisper runtimes, executable set, and VC++ signature passed."
     return $exe
+}
+
+function Get-TrxCounter([System.Xml.XmlElement]$Counters, [string]$Name, [bool]$Required = $true) {
+    $raw = $Counters.GetAttribute($Name)
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        if ($Required) { Fail "Platform.Tests TRX is missing required '$Name' counter." }
+        return $null
+    }
+    if ($raw -notmatch '^\d+$') {
+        Fail "Platform.Tests TRX counter '$Name' is not a non-negative integer."
+    }
+    try {
+        return [int]$raw
+    } catch {
+        Fail "Platform.Tests TRX counter '$Name' is outside the supported integer range."
+    }
+}
+
+function Assert-PlatformTestsResults([string]$ResultsDirectory, [int]$MinimumTests = 58) {
+    $trxFiles = @(Get-ChildItem -LiteralPath $ResultsDirectory -Filter '*.trx' -File -Recurse)
+    if ($trxFiles.Count -ne 1) {
+        Fail "Platform.Tests must produce exactly one TRX in the dedicated results directory; found $($trxFiles.Count)."
+    }
+    try {
+        [xml]$trx = Get-Content -LiteralPath $trxFiles[0].FullName -Raw
+    } catch {
+        Fail "Platform.Tests TRX could not be parsed as XML: $($_.Exception.Message)"
+    }
+    $counters = $trx.SelectSingleNode("//*[local-name()='Counters']")
+    if ($null -eq $counters -or -not ($counters -is [System.Xml.XmlElement])) {
+        Fail 'Platform.Tests TRX has no Counters element.'
+    }
+    $total = Get-TrxCounter $counters 'total'
+    $executed = Get-TrxCounter $counters 'executed'
+    $passed = Get-TrxCounter $counters 'passed'
+    $failed = Get-TrxCounter $counters 'failed'
+    $notExecuted = Get-TrxCounter $counters 'notExecuted'
+    if ($total -lt $MinimumTests) {
+        Fail "Platform.Tests discovered $total tests; the current baseline requires at least $MinimumTests."
+    }
+    if ($executed -ne $total -or $notExecuted -ne 0 -or $failed -ne 0 -or $passed -ne $total) {
+        Fail "Platform.Tests TRX counters are unhealthy: total=$total executed=$executed passed=$passed failed=$failed notExecuted=$notExecuted."
+    }
+    foreach ($counterName in @('error', 'timeout', 'aborted', 'inconclusive')) {
+        $counter = Get-TrxCounter $counters $counterName $false
+        if ($null -ne $counter -and $counter -ne 0) {
+            Fail "Platform.Tests TRX reports $counter $counterName result(s)."
+        }
+    }
+    Write-Host "Platform.Tests TRX passed: total=$total executed=$executed passed=$passed failed=$failed notExecuted=$notExecuted."
 }
 
 function Assert-PlatformTestsArchive([string]$Path) {
@@ -289,6 +416,10 @@ function Assert-PlatformTestsArchive([string]$Path) {
         Fail "Platform.Tests ZIP must contain exactly one VoiceDictation.Platform.Tests.dll."
     }
     New-Item -ItemType Directory -Force -Path $testsStage | Out-Null
+    if (Test-Path -LiteralPath $testResultsRoot) {
+        Remove-Item -LiteralPath $testResultsRoot -Recurse -Force
+    }
+    New-Item -ItemType Directory -Force -Path $testResultsRoot | Out-Null
     Expand-Archive -LiteralPath $Path -DestinationPath $testsStage -Force
     $dll = Join-Path $testsStage ($testDlls[0].Name.Replace('/', '\'))
     if (-not (Test-Path -LiteralPath $dll -PathType Leaf)) {
@@ -298,10 +429,12 @@ function Assert-PlatformTestsArchive([string]$Path) {
     $dotnet = Get-Command dotnet.exe -ErrorAction SilentlyContinue
     if ($null -eq $dotnet) { Fail "dotnet.exe is required to run Platform.Tests." }
     Write-Host "Running precompiled Platform.Tests with dotnet vstest."
-    & $dotnet.Source vstest $dll '--logger:trx;LogFileName=platform-tests.trx'
+    Clear-WorkflowTokens
+    & $dotnet.Source vstest $dll "--ResultsDirectory:$testResultsRoot" '--logger:trx;LogFileName=platform-tests.trx'
     if ($LASTEXITCODE -ne 0) {
         Fail "dotnet vstest failed with exit code $LASTEXITCODE."
     }
+    Assert-PlatformTestsResults $testResultsRoot
 }
 
 function Write-SilenceWave([string]$Path, [int]$Seconds = 3) {
@@ -338,6 +471,7 @@ function Quote-ProcessArgument([string]$Value) {
 }
 
 function Invoke-WindowsExecutable([string]$Path, [string[]]$Arguments, [string]$Label) {
+    Clear-WorkflowTokens
     $process = Start-Process -FilePath $Path -ArgumentList $Arguments -WorkingDirectory (Split-Path -Parent $Path) -WindowStyle Hidden -Wait -PassThru
     if ($process.ExitCode -ne 0) {
         Fail "$Label failed with exit code $($process.ExitCode)."
@@ -372,50 +506,70 @@ function Invoke-InstallerSmoke([string]$InstallerPath, [string]$ExpectedVersion)
     if ([System.Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
         Fail 'Installer smoke tests require Windows.'
     }
+    $runKeyPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+    $runValueName = 'Voice Dictation'
+    $existingRunValue = Get-ItemProperty -LiteralPath $runKeyPath -Name $runValueName -ErrorAction SilentlyContinue
+    $runValueWasPresent = $null -ne $existingRunValue -and
+        $existingRunValue.PSObject.Properties.Name -contains $runValueName
+    $originalRunValue = if ($runValueWasPresent) { [string]$existingRunValue.$runValueName } else { $null }
+
     if (Test-Path -LiteralPath $installRoot) {
         Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
-    $arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=`"$installRoot`"", '/TASKS="startup"')
-    $install = Start-Process -FilePath $InstallerPath -ArgumentList $arguments -Wait -PassThru
-    if ($install.ExitCode -ne 0) { Fail "Silent installer exited with code $($install.ExitCode)." }
-    $installedExe = Join-Path $installRoot 'VoiceDictation.exe'
-    if (-not (Test-Path -LiteralPath $installedExe -PathType Leaf)) { Fail 'Installer did not place VoiceDictation.exe.' }
-    $expectedRuntimeRelative = @(
-        'runtimes\win-x64\ggml-base-whisper.dll',
-        'runtimes\win-x64\ggml-cpu-whisper.dll',
-        'runtimes\win-x64\ggml-whisper.dll',
-        'runtimes\win-x64\whisper.dll',
-        'runtimes\noavx\win-x64\ggml-base-whisper.dll',
-        'runtimes\noavx\win-x64\ggml-cpu-whisper.dll',
-        'runtimes\noavx\win-x64\ggml-whisper.dll',
-        'runtimes\noavx\win-x64\whisper.dll'
-    )
-    foreach ($relative in $expectedRuntimeRelative) {
-        if (-not (Test-Path -LiteralPath (Join-Path $installRoot $relative) -PathType Leaf)) {
-            Fail "Installer did not recursively install required Whisper runtime '$relative'."
+    try {
+        $arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=`"$installRoot`"", '/TASKS="startup"')
+        Clear-WorkflowTokens
+        $install = Start-Process -FilePath $InstallerPath -ArgumentList $arguments -Wait -PassThru
+        if ($install.ExitCode -ne 0) { Fail "Silent installer exited with code $($install.ExitCode)." }
+        $installedExe = Join-Path $installRoot 'VoiceDictation.exe'
+        if (-not (Test-Path -LiteralPath $installedExe -PathType Leaf)) { Fail 'Installer did not place VoiceDictation.exe.' }
+        Assert-ExecutableVersion $installedExe $ExpectedVersion 'Installed VoiceDictation.exe'
+        $expectedRuntimeRelative = @(
+            'runtimes\win-x64\ggml-base-whisper.dll',
+            'runtimes\win-x64\ggml-cpu-whisper.dll',
+            'runtimes\win-x64\ggml-whisper.dll',
+            'runtimes\win-x64\whisper.dll',
+            'runtimes\noavx\win-x64\ggml-base-whisper.dll',
+            'runtimes\noavx\win-x64\ggml-cpu-whisper.dll',
+            'runtimes\noavx\win-x64\ggml-whisper.dll',
+            'runtimes\noavx\win-x64\whisper.dll'
+        )
+        foreach ($relative in $expectedRuntimeRelative) {
+            if (-not (Test-Path -LiteralPath (Join-Path $installRoot $relative) -PathType Leaf)) {
+                Fail "Installer did not recursively install required Whisper runtime '$relative'."
+            }
         }
+        $unsupportedInstalledRuntime = Get-ChildItem -LiteralPath (Join-Path $installRoot 'runtimes') -File -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '(?i)\\(?:win-arm64|win-x86)\\' }
+        if ($unsupportedInstalledRuntime) { Fail 'Installer installed an unsupported ARM64 or x86 runtime.' }
+        $runValue = Get-ItemProperty -LiteralPath $runKeyPath -Name $runValueName -ErrorAction SilentlyContinue
+        $expectedRunValue = "`"$installedExe`" --background"
+        if ($null -eq $runValue -or $runValue.$runValueName -ne $expectedRunValue) {
+            Fail 'Installer did not create the expected HKCU startup value.'
+        }
+        Invoke-WindowsExecutable $installedExe @('--self-test') 'Installed --self-test'
+        Invoke-WindowsExecutable $installedExe @('--inference-match-test') 'Installed --inference-match-test'
+        $uninstaller = Join-Path $installRoot 'unins000.exe'
+        if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) { Fail 'Installer did not place an uninstaller.' }
+        $uninstall = Start-Process -FilePath $uninstaller -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
+        if ($uninstall.ExitCode -ne 0) { Fail "Silent uninstaller exited with code $($uninstall.ExitCode)." }
+        if (Test-Path -LiteralPath $installRoot) { Fail 'Uninstall left installation files behind.' }
+        Write-Host "Silent install/startup-registry/self-test/uninstall smoke passed for $ExpectedVersion."
+    } finally {
+        # Inno's uninsdeletevalue intentionally removes the value it wrote.
+        # Restore the caller's prior state so the smoke test is non-destructive.
+        Restore-RegistryRunValue $runKeyPath $runValueName $runValueWasPresent $originalRunValue
     }
-    $unsupportedInstalledRuntime = Get-ChildItem -LiteralPath (Join-Path $installRoot 'runtimes') -File -Recurse -ErrorAction SilentlyContinue |
-        Where-Object { $_.FullName -match '(?i)\\(?:win-arm64|win-x86)\\' }
-    if ($unsupportedInstalledRuntime) { Fail 'Installer installed an unsupported ARM64 or x86 runtime.' }
-    $runValue = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'Voice Dictation' -ErrorAction SilentlyContinue
-    $expectedRunValue = "`"$installedExe`" --background"
-    if ($null -eq $runValue -or $runValue.'Voice Dictation' -ne $expectedRunValue) {
-        Fail 'Installer did not create the expected HKCU startup value.'
+    $restoredRunValue = Get-ItemProperty -LiteralPath $runKeyPath -Name $runValueName -ErrorAction SilentlyContinue
+    $restoredPresent = $null -ne $restoredRunValue -and
+        $restoredRunValue.PSObject.Properties.Name -contains $runValueName
+    if ($restoredPresent -ne $runValueWasPresent -or ($runValueWasPresent -and $restoredRunValue.$runValueName -cne $originalRunValue)) {
+        Fail 'Installer smoke did not restore the pre-existing HKCU startup value exactly.'
     }
-    Invoke-WindowsExecutable $installedExe @('--self-test') 'Installed --self-test'
-    Invoke-WindowsExecutable $installedExe @('--inference-match-test') 'Installed --inference-match-test'
-    $uninstaller = Join-Path $installRoot 'unins000.exe'
-    if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) { Fail 'Installer did not place an uninstaller.' }
-    $uninstall = Start-Process -FilePath $uninstaller -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
-    if ($uninstall.ExitCode -ne 0) { Fail "Silent uninstaller exited with code $($uninstall.ExitCode)." }
-    if (Test-Path -LiteralPath $installRoot) { Fail 'Uninstall left installation files behind.' }
-    $runValue = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'Voice Dictation' -ErrorAction SilentlyContinue
-    if ($null -ne $runValue) { Fail 'Uninstall left the HKCU startup value behind.' }
-    Write-Host "Silent install/startup-registry/self-test/uninstall smoke passed for $ExpectedVersion."
 }
 
 Assert-Version $Version
+$vcRedistPin = Get-VcRedistPin $Version
 $PortableSha256 = Assert-Sha256 $PortableSha256 'Portable ZIP SHA-256'
 $PlatformTestsSha256 = if ([string]::IsNullOrWhiteSpace($PlatformTestsSha256)) { '' } else { Assert-Sha256 $PlatformTestsSha256 'Platform.Tests ZIP SHA-256' }
 if ($RunPlatformTests -and ([string]::IsNullOrWhiteSpace($PlatformTestsSha256) -or [string]::IsNullOrWhiteSpace($PlatformTestsAssetName) -and [string]::IsNullOrWhiteSpace($PlatformTestsZipPath))) {
@@ -444,7 +598,7 @@ try {
         $PortableZipPath = (Resolve-Path -LiteralPath $PortableZipPath).Path
     }
     Assert-FileSha256 $PortableZipPath $PortableSha256 'Portable ZIP'
-    $portableExe = Assert-PortableArchive $PortableZipPath $Version
+    $portableExe = Assert-PortableArchive $PortableZipPath $Version $vcRedistPin
 
     if ($RunPlatformTests) {
         if ([string]::IsNullOrWhiteSpace($PlatformTestsZipPath)) {
@@ -457,8 +611,8 @@ try {
 
     # The built-in token is needed only for the release-asset API calls. Do not
     # let a precompiled app, test host, compiler, or installer child process
-    # inherit it through the environment.
-    [Environment]::SetEnvironmentVariable('GITHUB_TOKEN', $null, 'Process')
+    # inherit it through either conventional environment variable.
+    Clear-WorkflowTokens
 
     if ($RunPlatformTests) {
         Assert-PlatformTestsArchive $PlatformTestsZipPath
@@ -481,10 +635,24 @@ try {
     Copy-Item -Path (Join-Path $portableStage '*') -Destination $publishDir -Recurse -Force
     Copy-Item -LiteralPath (Join-Path $publishDir 'vc_redist.x64.exe') -Destination $vcRedist -Force
     Remove-Item -LiteralPath (Join-Path $publishDir 'vc_redist.x64.exe') -Force
+    # Inno adds the repository-owned notices explicitly below. Remove the
+    # copies from the portable payload so the installed package has one copy
+    # of each notice while retaining the portable README in publish.
+    foreach ($noticeName in @('THIRD_PARTY_NOTICES.md', 'DOTNET_THIRD_PARTY_NOTICES.txt')) {
+        $stagedNotice = Join-Path $publishDir $noticeName
+        if (-not (Test-Path -LiteralPath $stagedNotice -PathType Leaf)) {
+            Fail "Portable staging did not contain required notice '$noticeName'."
+        }
+        Remove-Item -LiteralPath $stagedNotice -Force
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $publishDir 'README.txt') -PathType Leaf)) {
+        Fail 'Portable staging lost required README.txt while preparing the installer.'
+    }
 
     $iscc = Get-Command iscc.exe -ErrorAction SilentlyContinue
     if ($null -eq $iscc) { Fail 'iscc.exe is required. Install the pinned Inno Setup package before running this script.' }
     $iss = Join-Path $repoRoot 'installer\VoiceDictation.iss'
+    Clear-WorkflowTokens
     & $iscc.Source '/Qp' "/DAPP_VERSION=$Version" $iss
     if ($LASTEXITCODE -ne 0) { Fail "Inno Setup exited with code $LASTEXITCODE." }
     $setup = Get-ChildItem -LiteralPath $installerArtifacts -Filter "Voice-Dictation-Windows-x64-$Version-Setup.exe" -File -Recurse | Select-Object -First 1

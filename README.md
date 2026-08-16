@@ -12,8 +12,12 @@ draft or published release in this repository, then manually dispatches the
 validation workflow with the exact SHA-256 values. The workflow downloads only
 those assets from this repository with its automatically scoped `GITHUB_TOKEN`,
 validates them, compiles the installer, and uploads a short-lived Actions
-artifact. It does not run on pushes or pull requests and it cannot access the
-private source repository.
+artifact. The workflow has only the repository `contents: write` permission
+because GitHub's draft-release asset endpoint requires that scope; the script
+uses it for GET requests only and clears both token environment variables
+before launching any downloaded app, test host, compiler, or installer. It
+does not run on pushes or pull requests and it cannot access the private source
+repository.
 
 ## Supported product
 
@@ -25,6 +29,10 @@ private source repository.
   runtime used by the native speech-recognition dependency on clean machines.
 - The beta is not code-signed or notarized. Windows SmartScreen may require the
   user to choose **More info** and **Run anyway**.
+- The 0.7.0 bootstrap pins the bundled official VC++ redist to SHA-256
+  `cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b`, file
+  version `14.44.35211.0`. It is intentionally the Microsoft PE32 bootstrap
+  executable; the app and Whisper runtime payload remain x64.
 
 See [`release/PORTABLE-README.txt`](release/PORTABLE-README.txt) for the
 end-user prerequisite note and [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)
@@ -52,16 +60,19 @@ selected version.
 2. `Voice-Dictation-Windows-x64-<version>-Platform.Tests.zip` (required by the
    default workflow setting). This is a compiled test output containing
    `VoiceDictation.Platform.Tests.dll` and its runtime/test dependencies, with
-   no source files or PDBs. Set the dispatch input `run_platform_tests` to
-   `false` only for a deliberate bootstrap check that has no test archive.
+   no source files or PDBs. The validator requires a TRX result with at least
+   the current 58-test baseline, every discovered test executed and passed,
+   and zero failed/not-executed tests. Set the dispatch input
+   `run_platform_tests` to `false` only for a deliberate bootstrap check that
+   has no test archive.
 
 Record the exact lowercase SHA-256 of each uploaded asset. In **Actions →
 Windows distribution validation → Run workflow**, supply the version, the
 `bootstrap-v<version>` tag, asset names, and corresponding hashes. The
 workflow validates the tag against the exact version, resolves the matching
 draft/release through the repository API, downloads the assets with the
-workflow's own read-only `GITHUB_TOKEN`, and refuses a missing, mismatched, or
-cross-version asset.
+workflow's own same-repository `GITHUB_TOKEN`, and refuses a missing,
+mismatched, or cross-version asset.
 
 ## What the workflow validates
 

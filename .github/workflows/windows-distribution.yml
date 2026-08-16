@@ -34,11 +34,13 @@ on:
         default: true
         type: boolean
 
-# The workflow is deliberately manual-only. The only token injected into the
-# validation script is this repository's read-only built-in token, used for its
-# own release assets; no private-source token or secret is accepted.
+# The workflow is deliberately manual-only. GitHub requires the built-in
+# contents:write scope when a workflow reads assets from a same-repository
+# draft release; this is the least scope accepted for that draft-release API.
+# The token is still limited to this distribution repository, the script only
+# performs GET requests, and no private-source token or secret is accepted.
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   validate:
@@ -81,9 +83,10 @@ jobs:
       - name: Validate bootstrap assets, run Windows tests, and package
         shell: pwsh
         env:
-          # github.token is scoped to this distribution repository and exists
-          # only for the release-asset download step; the script clears it
-          # before starting any precompiled/test/installer child process.
+          # github.token is scoped to this distribution repository. It is used
+          # only for same-repository draft/release asset GETs; the script clears
+          # GH_TOKEN and GITHUB_TOKEN before starting any precompiled app,
+          # test, compiler, or installer child process.
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
