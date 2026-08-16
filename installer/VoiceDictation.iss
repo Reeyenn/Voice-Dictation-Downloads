@@ -1,3 +1,11 @@
+#preproc ispp
+; PREPROCVER is Inno Setup's authoritative compiler version: four bytes for
+; major, minor, revision, and build. Fail closed unless ISCC is exactly 6.7.1.0.
+#define ExpectedInnoCompilerVersion (6 * 16777216 + 7 * 65536 + 1 * 256)
+#if PREPROCVER != ExpectedInnoCompilerVersion
+  #error "Voice Dictation requires Inno Setup compiler 6.7.1.0."
+#endif
+
 #define AppName "Voice Dictation"
 #define AppPublisher "Reeyen"
 #ifndef APP_VERSION
