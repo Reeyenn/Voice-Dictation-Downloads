@@ -35,6 +35,10 @@ if ($packageStart -lt 0 -or $installerSmoke -lt 0 -or $inference -lt 0 -or $inst
     throw 'Package mode must not execute the downloaded installer or portable inference; those calls belong to Native mode.'
 }
 Lacks $validator 'Invoke-InstallerSmoke $setupOut' 'Validator'
+foreach ($needle in @('function Wait-ForInstallRootRemoval','Wait-ForInstallRootRemoval $installRoot','Wait-ForInstallRootRemoval $canonicalInstallRoot','15000')) { Has $validator $needle 'Validator' }
+if ([regex]::Matches($validator, 'Wait-ForInstallRootRemoval \$').Count -ne 4) {
+    throw 'Each native installer smoke uninstall must wait for its isolated install root to disappear.'
+}
 foreach ($needle in @('Windows 11 x64 and ARM64','windows-11-arm','windows-2025','0.8.0')) { Has $readme $needle 'README' }
 Lacks $readme 'Windows on ARM64' 'README'
 Write-Host 'Distribution dual-architecture pin and provenance checks passed.'
