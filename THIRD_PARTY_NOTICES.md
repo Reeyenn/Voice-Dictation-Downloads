@@ -1,7 +1,7 @@
 # Windows beta third-party notices
 
-Voice Dictation for Windows is distributed as a self-contained x64 beta. The
-installer and portable archive include native runtime components from the
+Voice Dictation for Windows is distributed as self-contained x64 and ARM64 beta
+packages. The installer and portable archive include native runtime components from the
 projects below. Their licenses remain with their authors.
 
 ## NAudio 2.3.0

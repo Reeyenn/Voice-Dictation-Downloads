@@ -31,7 +31,7 @@ repository.
   runtime used by the native speech-recognition dependency on clean machines.
 - The beta is not code-signed or notarized. Windows SmartScreen may require the
   user to choose **More info** and **Run anyway**.
-- The 0.8.0 bootstrap pins the bundled official VC++ redist to SHA-256
+- The 0.8.0 and 0.9.0 bootstrap releases pin the bundled official VC++ redist to SHA-256
   `cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b`, file
   version `14.44.35211.0`. It is intentionally the Microsoft PE32 bootstrap
   executable; the app and Whisper runtime payload remain native to the archive label.
@@ -42,13 +42,13 @@ for component and model attribution.
 
 ## Bootstrap release contract
 
-Create a private draft bootstrap release tagged `bootstrap-v<version>` in this
+Create a draft bootstrap release tagged `bootstrap-v<version>` in this
 repository and attach the following prebuilt assets. Keep the final
 user-facing release tag `v<version>` reserved for the validated setup,
 portable, and checksum artifacts; it should not need to expose the compiled
-test archive. The names below are examples; the
-workflow dispatch accepts explicit names and checks that they contain the
-selected version.
+test archive. The filenames below are exact for the selected version; the
+workflow derives them from the version and does not accept arbitrary asset-name
+inputs.
 
 1. `Voice-Dictation-Windows-x64-<version>-Portable.zip` and
    `Voice-Dictation-Windows-arm64-<version>-Portable.zip` (both required). Each root
@@ -71,11 +71,13 @@ selected version.
 
 Record the exact lowercase SHA-256 of each uploaded asset. In **Actions →
 Windows distribution validation → Run workflow**, supply the version, the
-`bootstrap-v<version>` tag, asset names, and corresponding hashes. The
-workflow validates the tag against the exact version, resolves the matching
-draft/release through the repository API, downloads the assets with the
-workflow's own same-repository `GITHUB_TOKEN`, and refuses a missing,
-mismatched, or cross-version asset.
+exact `bootstrap-v<version>` tag, and these four hash inputs:
+`x64_portable_sha256`, `arm64_portable_sha256`, `x64_platform_tests_sha256`,
+and `arm64_platform_tests_sha256`. Do not supply asset names: the workflow
+derives and requires the exact versioned names above, validates the tag against
+the version, resolves the matching draft/release through the repository API,
+downloads the assets with the workflow's own same-repository `GITHUB_TOKEN`,
+and refuses a missing, mismatched, or cross-version asset.
 
 ## What the workflow validates
 

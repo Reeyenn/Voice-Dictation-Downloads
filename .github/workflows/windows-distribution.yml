@@ -3,8 +3,8 @@ name: Windows distribution validation
 on:
   workflow_dispatch:
     inputs:
-      version: { description: "Release version", required: true, default: 0.8.0, type: string }
-      bootstrap_release_tag: { description: "Draft bootstrap-v<version> tag", required: true, default: bootstrap-v0.8.0, type: string }
+      version: { description: "Release version", required: true, default: 0.9.0, type: string }
+      bootstrap_release_tag: { description: "Draft bootstrap-v<version> tag", required: true, default: bootstrap-v0.9.0, type: string }
       x64_portable_sha256: { description: "x64 portable SHA-256", required: true, type: string }
       arm64_portable_sha256: { description: "ARM64 portable SHA-256", required: true, type: string }
       x64_platform_tests_sha256: { description: "x64 Platform.Tests SHA-256", required: true, type: string }
@@ -63,7 +63,7 @@ jobs:
           ARM64_PORTABLE_SHA: ${{ inputs.arm64_portable_sha256 }}
           X64_TESTS_SHA: ${{ inputs.x64_platform_tests_sha256 }}
         run: |
-          ./scripts/Validate-Distribution.ps1 -Mode Package -Architecture x64 -Version $env:VERSION `
+          ./scripts/Validate-Distribution.ps1 -Mode Package -Architecture x64 -MinimumWindowsBuild 19045 -Version $env:VERSION `
             -PortableAssetName "Voice-Dictation-Windows-x64-$env:VERSION-Portable.zip" -PortableSha256 $env:X64_PORTABLE_SHA `
             -Arm64PortableAssetName "Voice-Dictation-Windows-arm64-$env:VERSION-Portable.zip" -Arm64PortableSha256 $env:ARM64_PORTABLE_SHA `
             -PlatformTestsAssetName "Voice-Dictation-Windows-x64-$env:VERSION-Platform.Tests.zip" -PlatformTestsSha256 $env:X64_TESTS_SHA `
@@ -103,7 +103,7 @@ jobs:
         run: |
           if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'X64' -or [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture -ne 'X64') { throw 'This job must run natively on x64.' }
           if ((dotnet --version).Trim() -cne '10.0.400') { throw 'Expected .NET SDK 10.0.400.' }
-          ./scripts/Validate-Distribution.ps1 -Mode Native -Architecture x64 -Version $env:VERSION -CandidateRoot ./candidate `
+          ./scripts/Validate-Distribution.ps1 -Mode Native -Architecture x64 -MinimumWindowsBuild 19045 -Version $env:VERSION -CandidateRoot ./candidate `
             -PortableSha256 $env:X64_PORTABLE_SHA `
             -PlatformTestsAssetName "Voice-Dictation-Windows-x64-$env:VERSION-Platform.Tests.zip" -PlatformTestsSha256 $env:X64_TESTS_SHA `
             -Repository $env:GITHUB_REPOSITORY -ReleaseTag $env:RELEASE_TAG
@@ -130,7 +130,7 @@ jobs:
           ARM64_TESTS_SHA: ${{ inputs.arm64_platform_tests_sha256 }}
         run: |
           if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'Arm64' -or [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture -ne 'Arm64') { throw 'This job must run natively on ARM64.' }
-          ./scripts/Validate-Distribution.ps1 -Mode Native -Architecture arm64 -Version $env:VERSION -CandidateRoot ./candidate `
+          ./scripts/Validate-Distribution.ps1 -Mode Native -Architecture arm64 -MinimumWindowsBuild 19045 -Version $env:VERSION -CandidateRoot ./candidate `
             -PortableSha256 $env:ARM64_PORTABLE_SHA `
             -PlatformTestsAssetName "Voice-Dictation-Windows-arm64-$env:VERSION-Platform.Tests.zip" -PlatformTestsSha256 $env:ARM64_TESTS_SHA `
             -Repository $env:GITHUB_REPOSITORY -ReleaseTag $env:RELEASE_TAG

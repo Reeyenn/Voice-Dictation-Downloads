@@ -9,7 +9,10 @@
 #define AppName "Voice Dictation"
 #define AppPublisher "Reeyen"
 #ifndef APP_VERSION
-  #define APP_VERSION "0.8.0"
+  #define APP_VERSION "0.9.0"
+#endif
+#ifndef ARTIFACT_ROOT
+  #define ARTIFACT_ROOT "..\artifacts"
 #endif
 #define AppVersion APP_VERSION
 
@@ -25,10 +28,10 @@ DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 UsePreviousTasks=yes
 PrivilegesRequired=lowest
-MinVersion=10.0.22621
+MinVersion=10.0.19045
 ArchitecturesAllowed=x64compatible arm64
 ArchitecturesInstallIn64BitMode=x64compatible arm64
-OutputDir=..\artifacts\installer
+OutputDir={#ARTIFACT_ROOT}\installer
 OutputBaseFilename=Voice-Dictation-Windows-{#AppVersion}-Setup
 Compression=lzma2/max
 SolidCompression=yes
@@ -53,8 +56,8 @@ Source: "..\publish\win-arm64\*"; DestDir: "{app}"; Flags: ignoreversion recurse
 Source: "..\release\PORTABLE-README.txt"; DestDir: "{app}"; DestName: "README.txt"; Flags: ignoreversion
 Source: "..\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\DOTNET_THIRD_PARTY_NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\artifacts\VCREDIST-PROVENANCE.txt"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\artifacts\vc_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall ignoreversion
+Source: "{#ARTIFACT_ROOT}\VCREDIST-PROVENANCE.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#ARTIFACT_ROOT}\vc_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall ignoreversion
 
 [Icons]
 Name: "{group}\Voice Dictation"; Filename: "{app}\VoiceDictation.exe"
@@ -98,6 +101,8 @@ end;
 
 function IsX64Install: Boolean;
 begin
+  { Is64BitInstallMode is false on 32-bit Windows. IsArm64 is checked first
+    so ARM64 never receives the x64 payload, even on emulation-capable hosts. }
   Result := (not IsArm64) and Is64BitInstallMode;
 end;
 
@@ -132,12 +137,12 @@ end;
 
 function OpenProcess(DesiredAccess: Cardinal; InheritHandle: Boolean; ProcessId: Cardinal): THandle;
   external 'OpenProcess@kernel32.dll stdcall';
-function GetLastError: Cardinal;
-  external 'GetLastError@kernel32.dll stdcall';
 function WaitForSingleObject(Handle: THandle; Milliseconds: Cardinal): Cardinal;
   external 'WaitForSingleObject@kernel32.dll stdcall';
 function CloseHandle(Handle: THandle): Boolean;
   external 'CloseHandle@kernel32.dll stdcall';
+function GetLastErrorCode: Cardinal;
+  external 'GetLastError@kernel32.dll stdcall';
 
 function WaitForVoiceUpdateParent: Boolean;
 var
@@ -148,9 +153,12 @@ begin
   if not IsVoiceUpdateMode then Exit;
   Pid := GetParentPid;
   if Pid = 0 then begin Result := False; Exit; end;
-  ProcessHandle := OpenProcess($00100000, False, Pid);
+  ProcessHandle := OpenProcess($00100000, False, Pid); { SYNCHRONIZE }
   if ProcessHandle = 0 then begin
-    Result := GetLastError = 87; // ERROR_INVALID_PARAMETER means the parent PID no longer exists.
+    { ERROR_INVALID_PARAMETER (87) means the parent PID no longer exists.
+      Any other OpenProcess failure must fail closed rather than leaving the
+      installer waiting on a process it could not validate. }
+    Result := GetLastErrorCode = 87;
     Exit;
   end;
   try
@@ -164,7 +172,7 @@ function InitializeSetup: Boolean;
 begin
   Result := IsX64Install or IsArm64Install;
   if not Result then begin
-    MsgBox('Voice Dictation requires native Windows 11 x64 or ARM64 (build 22621 or later).', mbError, MB_OK);
+    MsgBox('Voice Dictation requires native Windows 10 version 22H2 (build 19045) or newer, x64 or ARM64.', mbError, MB_OK);
     Exit;
   end;
   if not IsVoiceUpdateMode then Exit;

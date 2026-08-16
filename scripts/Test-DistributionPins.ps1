@@ -11,11 +11,14 @@ $validator = Read 'scripts\Validate-Distribution.ps1'
 $macValidator = Read 'scripts\Validate-MacDistribution.sh'
 $macContractTest = Read 'scripts\Test-MacDistributionContract.sh'
 $installer = Read 'installer\VoiceDictation.iss'
+$portableReadme = Read 'release\PORTABLE-README.txt'
+$thirdPartyNotices = Read 'THIRD_PARTY_NOTICES.md'
 $readme = Read 'README.md'
 $vcPin = 'cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b'
 foreach ($pin in @('actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683','actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9','actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02','actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093','dotnet-version: 10.0.400','windows-2025','windows-11-arm','windows-2022','Voice-Dictation-Windows-${{ inputs.version }}-Setup.exe','Voice-Dictation-Windows-x64-${{ inputs.version }}-Portable.zip','Voice-Dictation-Windows-arm64-${{ inputs.version }}-Portable.zip')) { Has $workflow $pin 'Workflow' }
-foreach ($needle in @('validate-x64','validate-server-2022-x64','CandidateRoot ./candidate','-Mode Native -Architecture x64','-MinimumWindowsBuild 19045','X64_TESTS_SHA','needs: [package-x64, validate-x64, validate-arm64, validate-server-2022-x64]')) { Has $workflow $needle 'Workflow' }
+foreach ($needle in @('validate-x64','validate-server-2022-x64','CandidateRoot ./candidate','-Mode Package -Architecture x64 -MinimumWindowsBuild 19045','-Mode Native -Architecture x64','-Mode Native -Architecture arm64','-MinimumWindowsBuild 19045','X64_TESTS_SHA','needs: [package-x64, validate-x64, validate-arm64, validate-server-2022-x64]')) { Has $workflow $needle 'Workflow' }
 foreach ($needle in @('workflow_dispatch:','macos-15-intel','macos-15','app_zip_sha256','validation_bundle_sha256','EXPECTED_ARCHITECTURE: x86_64','EXPECTED_ARCHITECTURE: arm64','Validate-MacDistribution.sh')) { Has $macWorkflow $needle 'macOS workflow' }
+foreach ($needle in @('default: 0.9.0','default: bootstrap-v0.9.0','x64_portable_sha256','arm64_portable_sha256','x64_platform_tests_sha256','arm64_platform_tests_sha256')) { Has $workflow $needle 'Workflow v0.9 dispatch contract' }
 foreach ($needle in @('Voice-Dictation-macOS-$VERSION.zip','Voice-Dictation-macOS-Universal-Validation-$VERSION.zip','bootstrap release must remain a draft','Voice-Dictation-MacValidation/VoiceDictationMacValidation','Voice-Dictation-MacValidation/run-mac-validation.sh','VD_MAC_VALIDATION_BEGIN','VD_MAC_VALIDATION_MODEL_PRELOAD','VD_MAC_VALIDATION_CASE','VD_MAC_VALIDATION_SILENCE','--max-latency-seconds 5','--max-wer 0.35','Universal 2','codesign --verify --deep --strict')) { Has $macValidator $needle 'macOS validator' }
 foreach ($needle in @('macos-15-intel','runs-on: macos-15','app_zip_sha256','validation_bundle_sha256','binary-only validation','assert_universal2','bash -n')) { Has $macContractTest $needle 'macOS contract test' }
 foreach ($needle in @('actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683','contents: read')) { Has $macWorkflow $needle 'macOS workflow' }
@@ -28,7 +31,7 @@ Lacks $macValidator 'Voice-Dictation.git' 'macOS validator'
 Lacks $workflow 'Package and validate native x64' 'Workflow'
 Lacks $workflow 'run_platform_tests' 'Workflow'
 Lacks $workflow 'windows-latest' 'Workflow'
-foreach ($needle in @("'0.8.0' = [pscustomobject]@{",$vcPin,'Assert-NativeHost','MinimumWindowsBuild','19045','0xAA64','0x8664','Voice-Dictation-Windows-$Version-Setup.exe','windows-universal','windows-arm64','windows-x64','Get-ValidatedCandidateArtifacts','Invoke-PinnedInference','Invoke-WindowsExecutableTimed','Timed inference measurements','VOICE_DICTATION_UIA_FIXTURE','portable.flag','runtimes\win-arm64','runtimes\noavx\win-x64','ExecuteTests','-ExecuteTests:($Mode -eq ''Native'')','archive structure, hash, and PE metadata passed','function Get-VoiceBackgroundProcesses','function Invoke-UpdateModeSmoke','/VOICEUPDATE=1','/UPDATEINSTALLDIR=','/PARENTPID=','WaitForExit(180000)','--background','Get-CimInstance -ClassName Win32_Process','function Clear-WorkflowTokens','$script:GitHubToken = $null','GITHUB_API_TOKEN','ACTIONS_RUNTIME_TOKEN','RUNNER_TOKEN','inferenceTimeoutMilliseconds = 300000','WaitForExit($inferenceTimeoutMilliseconds)','Stop-Process -Id $process.Id -Force')) { Has $validator $needle 'Validator' }
+foreach ($needle in @("'0.8.0' = [pscustomobject]@{", "'0.9.0' = [pscustomobject]@{",$vcPin,'Assert-NativeHost','MinimumWindowsBuild','19045','0xAA64','0x8664','Voice-Dictation-Windows-$Version-Setup.exe','windows-universal','windows-arm64','windows-x64','Get-ValidatedCandidateArtifacts','Invoke-PinnedInference','Invoke-WindowsExecutableTimed','Timed inference measurements','VOICE_DICTATION_UIA_FIXTURE','portable.flag','runtimes\win-arm64','runtimes\noavx\win-x64','ExecuteTests','-ExecuteTests:($Mode -eq ''Native'')','archive structure, hash, and PE metadata passed','function Get-VoiceBackgroundProcesses','function Invoke-UpdateModeSmoke','Assert-PlatformTestsArchiveBoundary','nested ZIP archives','(?:^|/)[^/]*\.zip(?:/|$)','foreign native test tooling','\.(?:so|dylib|a|o)$','/VOICEUPDATE=1','/UPDATEINSTALLDIR=','/PARENTPID=','WaitForExit(180000)','--background','Get-CimInstance -ClassName Win32_Process','function Clear-WorkflowTokens','$script:GitHubToken = $null','GITHUB_API_TOKEN','ACTIONS_RUNTIME_TOKEN','RUNNER_TOKEN','inferenceTimeoutMilliseconds = 300000','WaitForExit($inferenceTimeoutMilliseconds)','Stop-Process -Id $process.Id -Force')) { Has $validator $needle 'Validator' }
 $timedStart = $validator.IndexOf('function Invoke-WindowsExecutableTimed', [StringComparison]::Ordinal)
 $timedEnd = $validator.IndexOf('function Get-VoiceBackgroundProcesses', [StringComparison]::Ordinal)
 if ($timedStart -lt 0 -or $timedEnd -le $timedStart) { throw 'Timed inference helper boundaries are missing.' }
@@ -43,8 +46,38 @@ $nativeInference = $validator.IndexOf('Invoke-PinnedInference $portableExe', $na
 if ($nativeScrub -lt 0 -or $nativeTests -lt 0 -or $nativeInstaller -lt 0 -or $nativeInference -lt 0 -or $nativeScrub -ge $nativeTests -or $nativeScrub -ge $nativeInstaller -or $nativeScrub -ge $nativeInference) {
     throw 'Windows validator must scrub auth before any downloaded test host, installer, or inference process.'
 }
-foreach ($needle in @('#define APP_VERSION "0.8.0"','ArchitecturesAllowed=x64compatible arm64','ArchitecturesInstallIn64BitMode=x64compatible arm64','DisableDirPage=yes','OutputBaseFilename=Voice-Dictation-Windows-{#AppVersion}-Setup','Check: IsX64Install','Check: IsArm64Install','AppMutex={code:GetAppMutex}','GetLastError@kernel32.dll stdcall','Result := GetLastError = 87','Result := (not IsVoiceUpdateMode) and (not WizardSilent);','ExistingApp := ExpandConstant(''{app}\VoiceDictation.exe'');','Result := Exec(ExistingApp, ''--background'', '''', SW_SHOWNORMAL, ewNoWait, ResultCode);','UpdateSucceeded := LaunchInstalledApplication;','if not UpdateSucceeded then','Voice Dictation could not be started automatically.')) { Has $installer $needle 'Installer' }
+foreach ($needle in @('#define APP_VERSION "0.9.0"','#ifndef ARTIFACT_ROOT','MinVersion=10.0.19045','ArchitecturesAllowed=x64compatible arm64','ArchitecturesInstallIn64BitMode=x64compatible arm64','DisableDirPage=yes','OutputBaseFilename=Voice-Dictation-Windows-{#AppVersion}-Setup','Check: IsX64Install','Check: IsArm64Install','AppMutex={code:GetAppMutex}','GetLastErrorCode: Cardinal','external ''GetLastError@kernel32.dll stdcall'';','Result := GetLastErrorCode = 87','Result := (not IsVoiceUpdateMode) and (not WizardSilent);','ExistingApp := ExpandConstant(''{app}\VoiceDictation.exe'');','Result := Exec(ExistingApp, ''--background'', '''', SW_SHOWNORMAL, ewNoWait, ResultCode);','UpdateSucceeded := LaunchInstalledApplication;','if not UpdateSucceeded then','Voice Dictation could not be started automatically.')) { Has $installer $needle 'Installer' }
 Lacks $installer 'Result := IsVoiceUpdateMode or (not WizardSilent);' 'Installer'
+foreach ($needle in @('Windows 10 version 22H2 or newer (build 19045+)','Windows x64 or ARM64','Portable copies never overwrite themselves','32-bit Windows is not supported')) { Has $portableReadme $needle 'Portable README' }
+foreach ($needle in @('self-contained x64 and ARM64 beta','Whisper.net 1.9.1')) { Has $thirdPartyNotices $needle 'Third-party notices' }
+
+# Keep the archive-boundary cases explicit so a future validator edit cannot
+# accidentally allow foreign coverage payloads or a nested archive while still
+# accepting the native Whisper runtime paths that the test bundle requires.
+$nestedArchivePattern = '(?i)(?:^|/)[^/]*\.zip(?:/|$)'
+$foreignNativePattern = '(?i)(?:(?:^|/)(?:alpine|macos|osx|ubuntu|linux|freebsd|x86|x64|arm64|CodeCoverage)(?:/|$)|(?:^|/)(?:MicrosoftInstrumentationEngine|msdia|covrun|libCoverage|libInstrumentation)|\.(?:so|dylib|a|o)$)'
+$archiveBoundaryFixtures = @(
+    [pscustomobject]@{ Name = 'payload.zip'; Reject = $true }
+    [pscustomobject]@{ Name = 'nested/payload.zip/file.txt'; Reject = $true }
+    [pscustomobject]@{ Name = 'x86/MicrosoftInstrumentationEngine_x86.dll'; Reject = $true }
+    [pscustomobject]@{ Name = 'macos/x64/libInstrumentationEngine.dylib'; Reject = $true }
+    [pscustomobject]@{ Name = 'alpine/x64/libCoverageInstrumentationMethod.so'; Reject = $true }
+    [pscustomobject]@{ Name = 'CodeCoverage/amd64/CodeCoverage.exe'; Reject = $true }
+    [pscustomobject]@{ Name = 'helper.exe'; Reject = $true }
+    [pscustomobject]@{ Name = 'VoiceDictation.exe'; Reject = $false }
+    [pscustomobject]@{ Name = 'testhost.dll'; Reject = $false }
+    [pscustomobject]@{ Name = 'runtimes/win-x64/whisper.dll'; Reject = $false }
+    [pscustomobject]@{ Name = 'runtimes/noavx/win-x64/whisper.dll'; Reject = $false }
+    [pscustomobject]@{ Name = 'runtimes/win-arm64/whisper.dll'; Reject = $false }
+)
+foreach ($fixture in $archiveBoundaryFixtures) {
+    $reject = ($fixture.Name -match $nestedArchivePattern) -or
+        ($fixture.Name -match $foreignNativePattern) -or
+        ($fixture.Name -match '(?i)\.exe$' -and [System.IO.Path]::GetFileName($fixture.Name) -cne 'VoiceDictation.exe')
+    if ($reject -ne $fixture.Reject) {
+        throw "Platform.Tests archive-boundary fixture '$($fixture.Name)' expected Reject=$($fixture.Reject), got Reject=$reject."
+    }
+}
 if ([regex]::IsMatch($installer, '(?ms)procedure\s+DeinitializeSetup\s*;\s*var\b')) {
     throw 'Installer uses an empty procedure-local var block.'
 }
@@ -66,7 +99,7 @@ foreach ($needle in @('function Wait-ForInstallRootRemoval','Wait-ForInstallRoot
 if ([regex]::Matches($validator, 'Wait-ForInstallRootRemoval \$').Count -ne 4) {
     throw 'Each native installer smoke uninstall must wait for its isolated install root to disappear.'
 }
-foreach ($needle in @('Windows 10 22H2 x64/ARM64','Windows 11 x64/ARM64','windows-11-arm','windows-2025','0.8.0')) { Has $readme $needle 'README' }
+foreach ($needle in @('Windows 10 22H2 x64/ARM64','Windows 11 x64/ARM64','windows-11-arm','windows-2025','0.8.0','0.9.0','does not accept arbitrary asset-name inputs','x64_portable_sha256','arm64_portable_sha256')) { Has $readme $needle 'README' }
 foreach ($needle in @('Windows Server 2022 x64 build 20348','validator machine-readable')) { Has $readme $needle 'README' }
 Lacks $readme "worker's machine-readable" 'README'
 Lacks $readme 'Windows on ARM64' 'README'
