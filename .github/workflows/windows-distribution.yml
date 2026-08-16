@@ -110,6 +110,10 @@ jobs:
         shell: pwsh
         run: ./scripts/Test-DistributionPins.ps1
 
+      - name: Verify exact release selection regression
+        shell: pwsh
+        run: ./scripts/Test-ReleaseSelection.ps1
+
       - name: Validate bootstrap assets, run Windows tests, and package
         shell: pwsh
         env:
