@@ -18,6 +18,8 @@ function Assert-NotContains([string]$Text, [string]$Needle, [string]$Label) {
 
 $workflow = Get-Content -LiteralPath (Join-Path $repoRoot '.github\workflows\windows-distribution.yml') -Raw
 $validator = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\Validate-Distribution.ps1') -Raw
+$releaseSelection = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\ReleaseSelection.ps1') -Raw
+$releaseSelectionTest = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\Test-ReleaseSelection.ps1') -Raw
 $installer = Get-Content -LiteralPath (Join-Path $repoRoot 'installer\VoiceDictation.iss') -Raw
 $readme = Get-Content -LiteralPath (Join-Path $repoRoot 'README.md') -Raw
 
@@ -34,6 +36,7 @@ Assert-Contains $workflow 'GITHUB_PATH' 'Public workflow'
 Assert-NotContains $workflow 'VersionInfo.FileVersion' 'Public workflow'
 Assert-NotContains $workflow 'VersionInfo.ProductVersion' 'Public workflow'
 Assert-Contains $workflow 'VOICE_DICTATION_UIA_FIXTURE' 'Public workflow'
+Assert-Contains $workflow 'run: ./scripts/Test-ReleaseSelection.ps1' 'Public workflow'
 Assert-Contains $workflow 'for example 0.7.1' 'Public workflow'
 Assert-Contains $workflow 'default: bootstrap-v0.7.1' 'Public workflow'
 Assert-NotContains $workflow 'for example 0.7.0' 'Public workflow'
@@ -84,6 +87,14 @@ Assert-Contains $validator 'ReparsePoint' 'Distribution validator'
 Assert-Contains $validator 'metadata is empty' 'Distribution validator'
 Assert-Contains $validator 'foreach ($field in @(''Sha256'', ''Size'', ''ProductVersion'', ''FileVersion'', ''ProductName'', ''OriginalFilename''))' 'Distribution validator'
 Assert-Contains $validator "SetEnvironmentVariable('VOICE_DICTATION_UIA_FIXTURE', '1', 'Process')" 'Distribution validator'
+Assert-Contains $validator 'ReleaseSelection.ps1' 'Distribution validator'
+Assert-Contains $validator 'Select-ExactRelease' 'Distribution validator'
+Assert-Contains $releaseSelection 'foreach ($candidate in $Response)' 'Release selection helper'
+Assert-Contains $releaseSelection 'exactly one release object' 'Release selection helper'
+Assert-Contains $releaseSelection 'aggregated tag_name array' 'Release selection helper'
+Assert-Contains $releaseSelectionTest 'multiple-release regression' 'Release selection regression'
+Assert-Contains $releaseSelectionTest 'duplicate-release regression' 'Release selection regression'
+Assert-Contains $releaseSelectionTest 'aggregated-response regression' 'Release selection regression'
 Assert-Contains $installer 'RegQueryStringValue' 'Public installer'
 Assert-Contains $installer 'RegDeleteValue' 'Public installer'
 Assert-Contains $installer 'CurUninstallStepChanged' 'Public installer'

@@ -18,6 +18,7 @@ param(
 # never be given a private source-repository token or a source checkout.
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot "ReleaseSelection.ps1")
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $output = [System.IO.Path]::GetFullPath($OutputRoot)
@@ -346,27 +347,30 @@ function Download-ReleaseAsset(
         'User-Agent' = 'voice-dictation-public-distribution-validator'
     }
     $releaseUri = "https://api.github.com/repos/$Repo/releases/tags/$([Uri]::EscapeDataString($Tag))"
+    $tagEndpointFailed = $false
+    $tagResponse = $null
     try {
-        $release = Invoke-RestMethod -Method Get -Uri $releaseUri -Headers $headers
+        $tagResponse = Invoke-RestMethod -Method Get -Uri $releaseUri -Headers $headers
     } catch {
+        $tagEndpointFailed = $true
+    }
+    if (-not $tagEndpointFailed) {
+        try {
+            $release = Select-ExactRelease -Response $tagResponse -ExpectedTag $Tag -Source 'Release tag endpoint'
+        } catch {
+            Fail $_.Exception.Message
+        }
+    } else {
         # GitHub's tag endpoint has historically been inconsistent for draft
         # releases. Retry the authenticated release list, still constrained to
         # this repository and exact tag, before failing closed.
         try {
             $releaseListUri = "https://api.github.com/repos/$Repo/releases?per_page=100"
-            $release = @(
-                Invoke-RestMethod -Method Get -Uri $releaseListUri -Headers $headers |
-                    Where-Object { $_.tag_name -ceq $Tag }
-            ) | Select-Object -First 1
+            $releaseListResponse = Invoke-RestMethod -Method Get -Uri $releaseListUri -Headers $headers
+            $release = Select-ExactRelease -Response $releaseListResponse -ExpectedTag $Tag -Source 'Release list endpoint'
         } catch {
             Fail "Could not read release '$Tag' from this distribution repository: $($_.Exception.Message)"
         }
-        if ($null -eq $release) {
-            Fail "Could not find release '$Tag' in this distribution repository."
-        }
-    }
-    if ($release.tag_name -ne $Tag) {
-        Fail "The release API returned tag '$($release.tag_name)' instead of '$Tag'."
     }
     $asset = @($release.assets | Where-Object { $_.name -ceq $AssetName })
     if ($asset.Count -ne 1) {
