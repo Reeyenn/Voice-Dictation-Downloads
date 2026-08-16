@@ -16,7 +16,11 @@ Lacks $workflow 'Package and validate native x64' 'Workflow'
 Lacks $workflow 'run_platform_tests' 'Workflow'
 Lacks $workflow 'windows-latest' 'Workflow'
 foreach ($needle in @("'0.8.0' = [pscustomobject]@{",$vcPin,'Assert-NativeHost','0xAA64','0x8664','Voice-Dictation-Windows-$Version-Setup.exe','windows-universal','windows-arm64','windows-x64','Get-ValidatedCandidateArtifacts','Invoke-PinnedInference','VOICE_DICTATION_UIA_FIXTURE','portable.flag','runtimes\win-arm64','runtimes\noavx\win-x64','ExecuteTests','-ExecuteTests:($Mode -eq ''Native'')','archive structure, hash, and PE metadata passed')) { Has $validator $needle 'Validator' }
-foreach ($needle in @('#define APP_VERSION "0.8.0"','ArchitecturesAllowed=x64compatible arm64','ArchitecturesInstallIn64BitMode=x64compatible arm64','DisableDirPage=yes','OutputBaseFilename=Voice-Dictation-Windows-{#AppVersion}-Setup','Check: IsX64Install','Check: IsArm64Install','AppMutex={code:GetAppMutex}','GetLastError@kernel32.dll stdcall','Result := GetLastError = 87')) { Has $installer $needle 'Installer' }
+foreach ($needle in @('#define APP_VERSION "0.8.0"','ArchitecturesAllowed=x64compatible arm64','ArchitecturesInstallIn64BitMode=x64compatible arm64','DisableDirPage=yes','OutputBaseFilename=Voice-Dictation-Windows-{#AppVersion}-Setup','Check: IsX64Install','Check: IsArm64Install','AppMutex={code:GetAppMutex}','GetLastError@kernel32.dll stdcall','Result := GetLastError = 87','Result := (not IsVoiceUpdateMode) and (not WizardSilent);','ExistingApp := ExpandConstant(''{app}\VoiceDictation.exe'');','Result := Exec(ExistingApp, ''--background'', '''', SW_SHOWNORMAL, ewNoWait, ResultCode);','UpdateSucceeded := LaunchInstalledApplication;','if not UpdateSucceeded then','Voice Dictation could not be started automatically.')) { Has $installer $needle 'Installer' }
+Lacks $installer 'Result := IsVoiceUpdateMode or (not WizardSilent);' 'Installer'
+if ([regex]::IsMatch($installer, '(?ms)procedure\s+DeinitializeSetup\s*;\s*var\b')) {
+    throw 'Installer uses an empty procedure-local var block.'
+}
 Lacks $installer 'if ProcessHandle = 0 then Exit;' 'Installer'
 
 $archiveGuard = $validator.IndexOf('if (-not $ExecuteTests) {', [StringComparison]::Ordinal)
