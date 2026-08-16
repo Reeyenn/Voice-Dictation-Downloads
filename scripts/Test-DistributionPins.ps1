@@ -89,6 +89,16 @@ Assert-Contains $validator 'foreach ($field in @(''Sha256'', ''Size'', ''Product
 Assert-Contains $validator "SetEnvironmentVariable('VOICE_DICTATION_UIA_FIXTURE', '1', 'Process')" 'Distribution validator'
 Assert-Contains $validator 'ReleaseSelection.ps1' 'Distribution validator'
 Assert-Contains $validator 'Select-ExactRelease' 'Distribution validator'
+Assert-Contains $validator 'Remove-Item -LiteralPath $scratchInput -Force' 'Distribution validator'
+$setupCopyIndex = $validator.IndexOf('Copy-Item -LiteralPath $setup.FullName -Destination $setupOut -Force', [System.StringComparison]::Ordinal)
+$scratchCleanupIndex = $validator.IndexOf('foreach ($scratchInput in @($vcRedist, $vcRedistEvidence))', [System.StringComparison]::Ordinal)
+$unexpectedOutputIndex = $validator.IndexOf('$unexpectedOutput = @(', [System.StringComparison]::Ordinal)
+if ($setupCopyIndex -lt 0 -or $scratchCleanupIndex -le $setupCopyIndex -or $unexpectedOutputIndex -le $scratchCleanupIndex) {
+    throw 'VC++ scratch cleanup must follow setup copy and precede final output allowlist validation.'
+}
+if ($validator -notmatch '(?ms)\$expectedOutputNames\s*=\s*@\(\s*\[System\.IO\.Path\]::GetFileName\(\$portableOut\)\s+\[System\.IO\.Path\]::GetFileName\(\$setupOut\)\s+''SHA256SUMS\.json''\s+''SHA256SUMS\.txt''\s*\)') {
+    throw 'Final output allowlist must contain exactly setup, portable, and the TXT/JSON manifests.'
+}
 Assert-Contains $releaseSelection 'foreach ($candidate in $Response)' 'Release selection helper'
 Assert-Contains $releaseSelection 'exactly one release object' 'Release selection helper'
 Assert-Contains $releaseSelection 'aggregated tag_name array' 'Release selection helper'
