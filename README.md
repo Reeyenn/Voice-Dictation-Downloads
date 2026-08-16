@@ -29,7 +29,7 @@ repository.
   runtime used by the native speech-recognition dependency on clean machines.
 - The beta is not code-signed or notarized. Windows SmartScreen may require the
   user to choose **More info** and **Run anyway**.
-- The 0.7.0 bootstrap pins the bundled official VC++ redist to SHA-256
+- The 0.7.1 bootstrap pins the bundled official VC++ redist to SHA-256
   `cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b`, file
   version `14.44.35211.0`. It is intentionally the Microsoft PE32 bootstrap
   executable; the app and Whisper runtime payload remain x64.
@@ -50,8 +50,9 @@ selected version.
 
 1. `Voice-Dictation-Windows-x64-<version>-Portable.zip` (required). The root
    of the archive must contain `VoiceDictation.exe`, the official signed
-   `vc_redist.x64.exe`, `README.txt`, `THIRD_PARTY_NOTICES.md`, and the
-   separate `DOTNET_THIRD_PARTY_NOTICES.txt` runtime notice. It must also
+   `vc_redist.x64.exe`, `VCREDIST-PROVENANCE.txt`, `README.txt`,
+   `THIRD_PARTY_NOTICES.md`, and the separate `DOTNET_THIRD_PARTY_NOTICES.txt`
+   runtime notice. It must also
    contain exactly the four Whisper DLLs under each of
    `runtimes/win-x64/` and `runtimes/noavx/win-x64/`:
    `ggml-base-whisper.dll`, `ggml-cpu-whisper.dll`, `ggml-whisper.dll`, and

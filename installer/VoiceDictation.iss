@@ -1,7 +1,7 @@
 #define AppName "Voice Dictation"
 #define AppPublisher "Reeyen"
 #ifndef APP_VERSION
-  #define APP_VERSION "0.7.0"
+  #define APP_VERSION "0.7.1"
 #endif
 #define AppVersion APP_VERSION
 
@@ -38,8 +38,10 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 
 [Files]
 Source: "..\publish\win-x64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\release\PORTABLE-README.txt"; DestDir: "{app}"; DestName: "README.txt"; Flags: ignoreversion
 Source: "..\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\DOTNET_THIRD_PARTY_NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\artifacts\VCREDIST-PROVENANCE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\artifacts\vc_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall ignoreversion
 
 [Icons]
@@ -47,7 +49,7 @@ Name: "{group}\Voice Dictation"; Filename: "{app}\VoiceDictation.exe"
 Name: "{autodesktop}\Voice Dictation"; Filename: "{app}\VoiceDictation.exe"; Tasks: desktopicon
 
 [Registry]
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Voice Dictation"; ValueData: """{app}\VoiceDictation.exe"" --background"; Flags: uninsdeletevalue; Tasks: startup
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Voice Dictation"; ValueData: """{app}\VoiceDictation.exe"" --background"; Tasks: startup
 
 [Run]
 Filename: "{tmp}\vc_redist.x64.exe"; Parameters: "/install /quiet /norestart"; Verb: "runas"; StatusMsg: "Installing the Microsoft Visual C++ runtime..."; Flags: shellexec waituntilterminated skipifdoesntexist; Check: VCRedistNeeded
@@ -94,4 +96,24 @@ begin
       Result := not VersionAtLeast(VersionText, 14, 30);
     end;
   end;
+end;
+
+procedure RemoveOwnedStartupValue;
+const
+  RunSubkey = 'Software\Microsoft\Windows\CurrentVersion\Run';
+  RunValueName = 'Voice Dictation';
+var
+  CurrentValue: string;
+  ExpectedValue: string;
+begin
+  ExpectedValue := '"' + ExpandConstant('{app}\VoiceDictation.exe') + '" --background';
+  if RegQueryStringValue(HKCU, RunSubkey, RunValueName, CurrentValue) and
+     (CurrentValue = ExpectedValue) then
+    RegDeleteValue(HKCU, RunSubkey, RunValueName);
+end;
+
+procedure CurUninstallStepChanged(UninstallStep: TUninstallStep);
+begin
+  if UninstallStep = usUninstall then
+    RemoveOwnedStartupValue;
 end;
