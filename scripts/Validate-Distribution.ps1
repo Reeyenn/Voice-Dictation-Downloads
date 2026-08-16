@@ -870,6 +870,19 @@ try {
     $setupOut = Join-Path $output $setup.Name
     Copy-Item -LiteralPath $setup.FullName -Destination $setupOut -Force
 
+    # These two files are compiler inputs only. Inno has embedded them in the
+    # copied setup now, so remove exactly those scratch files before the final
+    # output allowlist and installer/inference smoke checks.
+    foreach ($scratchInput in @($vcRedist, $vcRedistEvidence)) {
+        if (Test-Path -LiteralPath $scratchInput) {
+            $scratchItem = Get-Item -LiteralPath $scratchInput
+            if (($scratchItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                Fail "Release scratch input must not be a reparse point: $scratchInput"
+            }
+            Remove-Item -LiteralPath $scratchInput -Force
+        }
+    }
+
     $expectedOutputNames = @(
         [System.IO.Path]::GetFileName($portableOut)
         [System.IO.Path]::GetFileName($setupOut)
