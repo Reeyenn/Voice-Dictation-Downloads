@@ -14,7 +14,7 @@ foreach ($pin in @('actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683','
 Lacks $workflow 'run_platform_tests' 'Workflow'
 Lacks $workflow 'windows-latest' 'Workflow'
 foreach ($needle in @("'0.8.0' = [pscustomobject]@{",$vcPin,'Assert-NativeHost','0xAA64','0x8664','Voice-Dictation-Windows-$Version-Setup.exe','windows-universal','windows-arm64','windows-x64','Get-ValidatedCandidateArtifacts','Invoke-PinnedInference','VOICE_DICTATION_UIA_FIXTURE','portable.flag','runtimes\win-arm64','runtimes\noavx\win-x64')) { Has $validator $needle 'Validator' }
-foreach ($needle in @('#define APP_VERSION "0.8.0"','ArchitecturesAllowed=x64compatible arm64','ArchitecturesInstallIn64BitMode=x64compatible arm64','OutputBaseFilename=Voice-Dictation-Windows-{#AppVersion}-Setup','Check: IsX64Install','Check: IsArm64Install','AppMutex={code:GetAppMutex}')) { Has $installer $needle 'Installer' }
+foreach ($needle in @('#define APP_VERSION "0.8.0"','ArchitecturesAllowed=x64compatible arm64','ArchitecturesInstallIn64BitMode=x64compatible arm64','DisableDirPage=yes','OutputBaseFilename=Voice-Dictation-Windows-{#AppVersion}-Setup','Check: IsX64Install','Check: IsArm64Install','AppMutex={code:GetAppMutex}')) { Has $installer $needle 'Installer' }
 foreach ($needle in @('Windows 11 x64 and ARM64','windows-11-arm','windows-2025','0.8.0')) { Has $readme $needle 'README' }
 Lacks $readme 'Windows on ARM64' 'README'
 Write-Host 'Distribution dual-architecture pin and provenance checks passed.'

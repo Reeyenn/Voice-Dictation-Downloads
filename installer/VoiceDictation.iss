@@ -20,6 +20,7 @@ AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion} beta
 AppPublisher={#AppPublisher}
 DefaultDirName={localappdata}\Programs\Voice Dictation
+DisableDirPage=yes
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 UsePreviousTasks=yes
