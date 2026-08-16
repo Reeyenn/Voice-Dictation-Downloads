@@ -6,7 +6,8 @@ Inno Setup recipe, the application icon, and the portable-package prerequisite
 notice. It deliberately contains no application source, debug symbols, private
 repository credentials, or build outputs.
 
-The application is distributed as prebuilt Windows 11 x64 and ARM64 beta archives. The source
+The application is distributed as prebuilt Windows 10 22H2 x64/ARM64
+(build 19045+) and Windows 11 x64/ARM64 beta archives. The source
 build remains private; a maintainer uploads versioned bootstrap archives to a
 draft or published release in this repository, then manually dispatches the
 validation workflow with the exact SHA-256 values. The workflow downloads only
@@ -14,16 +15,17 @@ those assets from this repository with its automatically scoped `GITHUB_TOKEN`,
 validates them, compiles the installer, and uploads a short-lived Actions
 artifact. The workflow has only the repository `contents: write` permission
 because GitHub's draft-release asset endpoint requires that scope; the script
-uses it for GET requests only and clears both token environment variables
+uses it for GET requests only and clears token environment variables
 before launching any downloaded app, test host, compiler, or installer. It
 does not run on pushes or pull requests and it cannot access the private source
 repository.
 
 ## Supported product
 
-- Windows 11 x64 and ARM64, build 22621 or newer.
-- Windows 10, Microsoft Store/MSIX packaging, accounts, and
-  cloud sync are outside this beta.
+- Windows 10 22H2 x64/ARM64 (build 19045+) and Windows 11 x64/ARM64 are supported beta targets.
+- The native hosted proof covers Windows 11 x64/ARM64 plus Windows Server 2022 x64 build 20348. Server 2022 is compatibility evidence from the pre-Windows-11 server line, not literal Windows 10 hardware proof.
+- The product and installer floor is Windows build 19045 or newer. The native validator records the exact host build and rejects lower builds.
+- Microsoft Store/MSIX packaging, accounts, and cloud sync are outside this beta.
 - The portable package keeps microphone audio and transcripts in memory. The
   included `vc_redist.x64.exe` is the official Microsoft Visual C++ v14 x64
   runtime used by the native speech-recognition dependency on clean machines.
@@ -80,7 +82,7 @@ mismatched, or cross-version asset.
 The packaging job runs natively on GitHub's x64 `windows-2025` image, builds one
 universal installer, and validates archive hashes/structure plus native PE metadata
 without executing candidate files. Separate jobs download that immutable candidate
-and validate it natively on `windows-2025` x64 and the official Windows 11 ARM64
+and validate it natively on `windows-2025` x64, Windows Server 2022 x64, and the official Windows 11 ARM64
 `windows-11-arm` image. The jobs install the pinned .NET 10 SDK; the packaging job installs Inno Setup and checks
 the caller-supplied hashes, rejects source/debug material, verifies the
 Microsoft Authenticode signature and pinned metadata/hash on the VC++ runtime,
@@ -91,12 +93,51 @@ PE32. The workflow runs the precompiled Platform tests with `dotnet vstest`,
 runs the app self-tests, and performs a silent install/startup-registry,
 self-test/uninstall smoke test. It downloads the pinned Whisper model and JFK
 sample, verifies their byte counts and hashes, then runs the known-phrase and
-silence inference checks. The output artifact contains the original portable
+silence inference checks while emitting elapsed phrase/silence measurements. The output artifact contains the original portable
 ZIP, the freshly compiled setup executable, and text/JSON SHA-256 manifests.
 
 The hosted runners cannot prove every physical microphone, global shortcut,
 foreground editor, UI Automation, or user security-policy combination. This
-repository therefore keeps the product claim at **Windows 11 x64 and ARM64 beta**.
+repository therefore keeps the product claim at **Windows 10 22H2 x64/ARM64 and Windows 11 x64/ARM64 beta**; Server 2022 is separately reported as compatibility evidence.
+
+## macOS binary-only validation
+
+The manually dispatched **macOS distribution validation** workflow runs on both
+native `macos-15-intel` and Apple-silicon `macos-15` hosts. It downloads only
+these exact assets from the draft `bootstrap-v<version>` release in this public
+repository:
+
+- `Voice-Dictation-macOS-<version>.zip`, containing one `Voice Dictation.app`.
+- `Voice-Dictation-macOS-Universal-Validation-<version>.zip`, containing the
+  precompiled Universal 2 `VoiceDictationMacValidation` executable and its
+  host-checking launcher.
+
+The app ZIP must contain a Universal 2 app and Universal 2 Mach-O binaries for
+every nested Sparkle executable/library. The validator checks ZIP paths and
+metadata, app version/build/minimum macOS 15.6, menu-bar launch policy,
+Sparkle signed-feed and manual-install settings, deep code signing, and an
+actual LaunchServices start on each host.
+
+The validation ZIP must contain the root
+`Voice-Dictation-MacValidation/VoiceDictationMacValidation` executable and
+`run-mac-validation.sh`. The executable is invoked directly on each native
+host with fixed WER/latency gates and must emit the validator machine-readable
+records before exiting successfully:
+
+```text
+VD_MAC_VALIDATION_BEGIN architecture=<x86_64|arm64> ...
+VD_MAC_VALIDATION_MODEL_PRELOAD seconds=<seconds>
+VD_MAC_VALIDATION_CASE label=<cold|warm>-<n> ... latency_seconds=<seconds> wer=<wer>
+VD_MAC_VALIDATION_SILENCE result=no_audio
+VD_MAC_VALIDATION_SUMMARY status=pass ...
+```
+
+The public workflow enforces WER <= 0.35 and phrase latency <= 5 seconds for
+the six cold/warm synthesized-phrase cases, checks model preload and silence,
+and rejects source, debug, `.git`, `.build`, and macOS metadata entries. It
+never invokes SwiftPM, Xcode, or a private source checkout; the precompiled
+validation executable owns model preload, local phrase synthesis, phrase WER,
+and no-audio checks.
 
 ## Repository boundaries
 

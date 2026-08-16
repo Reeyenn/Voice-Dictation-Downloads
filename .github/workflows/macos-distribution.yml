@@ -1,0 +1,51 @@
+name: macOS distribution validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      version: { description: "Release version", required: true, default: 0.8.0, type: string }
+      bootstrap_release_tag: { description: "Draft bootstrap-v<version> tag", required: true, default: bootstrap-v0.8.0, type: string }
+      app_zip_sha256: { description: "macOS app ZIP SHA-256", required: true, type: string }
+      validation_bundle_sha256: { description: "macOS validation bundle SHA-256", required: true, type: string }
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-distribution-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  validate-intel:
+    name: Validate precompiled app and benchmark on native macOS Intel
+    runs-on: macos-15-intel
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with: { persist-credentials: false }
+      - name: Check binary-only validation contract
+        run: ./scripts/Test-MacDistributionContract.sh
+      - name: Validate exact binary-only Intel candidate
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          EXPECTED_ARCHITECTURE: x86_64
+          MINIMUM_MACOS: '15.6'
+        run: ./scripts/Validate-MacDistribution.sh '${{ inputs.version }}' '${{ inputs.bootstrap_release_tag }}' '${{ inputs.app_zip_sha256 }}' '${{ inputs.validation_bundle_sha256 }}'
+
+  validate-arm64:
+    name: Validate precompiled app and benchmark on native macOS Apple silicon
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with: { persist-credentials: false }
+      - name: Check binary-only validation contract
+        run: ./scripts/Test-MacDistributionContract.sh
+      - name: Validate exact binary-only ARM64 candidate
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          EXPECTED_ARCHITECTURE: arm64
+          MINIMUM_MACOS: '15.6'
+        run: ./scripts/Validate-MacDistribution.sh '${{ inputs.version }}' '${{ inputs.bootstrap_release_tag }}' '${{ inputs.app_zip_sha256 }}' '${{ inputs.validation_bundle_sha256 }}'
