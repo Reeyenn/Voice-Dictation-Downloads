@@ -107,17 +107,18 @@ begin
 end;
 
 procedure RemoveOwnedStartupValue;
-const
-  RunSubkey = 'Software\Microsoft\Windows\CurrentVersion\Run';
-  RunValueName = 'Voice Dictation';
 var
   CurrentValue: string;
   ExpectedValue: string;
 begin
   ExpectedValue := '"' + ExpandConstant('{app}\VoiceDictation.exe') + '" --background';
-  if RegQueryStringValue(HKCU, RunSubkey, RunValueName, CurrentValue) and
+  if RegQueryStringValue(HKCU,
+     'Software\Microsoft\Windows\CurrentVersion\Run',
+     'Voice Dictation', CurrentValue) and
      (CurrentValue = ExpectedValue) then
-    RegDeleteValue(HKCU, RunSubkey, RunValueName);
+    RegDeleteValue(HKCU,
+      'Software\Microsoft\Windows\CurrentVersion\Run',
+      'Voice Dictation');
 end;
 
 procedure CurUninstallStepChanged(UninstallStep: TUninstallStep);
