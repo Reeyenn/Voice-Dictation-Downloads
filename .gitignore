@@ -1,0 +1,5 @@
+# Generated only by the manual Windows validation workflow.
+/artifacts/
+/publish/
+/input/
+*.partial
