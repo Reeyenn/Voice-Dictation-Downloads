@@ -3,78 +3,34 @@ name: Windows distribution validation
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: "Version whose draft or published release contains the bootstrap assets (for example 0.7.1)"
-        required: true
-        type: string
-      bootstrap_release_tag:
-        description: "Private draft bootstrap tag; must be bootstrap-v<version>"
-        required: true
-        default: bootstrap-v0.7.1
-        type: string
-      portable_asset:
-        description: "Exact versioned portable ZIP asset name"
-        required: true
-        type: string
-      portable_sha256:
-        description: "Lowercase SHA-256 for the portable ZIP"
-        required: true
-        type: string
-      platform_tests_asset:
-        description: "Exact versioned precompiled Platform.Tests ZIP asset name"
-        required: false
-        type: string
-      platform_tests_sha256:
-        description: "SHA-256 for Platform.Tests ZIP (required when tests are enabled)"
-        required: false
-        type: string
-      run_platform_tests:
-        description: "Run the precompiled Platform.Tests archive (default true)"
-        required: false
-        default: true
-        type: boolean
+      version: { description: "Release version", required: true, default: 0.8.0, type: string }
+      bootstrap_release_tag: { description: "Draft bootstrap-v<version> tag", required: true, default: bootstrap-v0.8.0, type: string }
+      x64_portable_sha256: { description: "x64 portable SHA-256", required: true, type: string }
+      arm64_portable_sha256: { description: "ARM64 portable SHA-256", required: true, type: string }
+      x64_platform_tests_sha256: { description: "x64 Platform.Tests SHA-256", required: true, type: string }
+      arm64_platform_tests_sha256: { description: "ARM64 Platform.Tests SHA-256", required: true, type: string }
 
-# The workflow is deliberately manual-only. GitHub requires the built-in
-# contents:write scope when a workflow reads assets from a same-repository
-# draft release; this is the least scope accepted for that draft-release API.
-# The token is still limited to this distribution repository, the script only
-# performs GET requests, and no private-source token or secret is accepted.
 permissions:
   contents: write
+concurrency:
+  group: windows-distribution-${{ inputs.version }}
+  cancel-in-progress: false
 
 jobs:
-  validate:
-    name: Validate and package Windows x64 beta
-    runs-on: windows-latest
-    timeout-minutes: 60
-    env:
-      BOOTSTRAP_VERSION: ${{ inputs.version }}
-      BOOTSTRAP_RELEASE_TAG: ${{ inputs.bootstrap_release_tag }}
-      PORTABLE_ASSET: ${{ inputs.portable_asset }}
-      PORTABLE_SHA256: ${{ inputs.portable_sha256 }}
-      PLATFORM_TESTS_ASSET: ${{ inputs.platform_tests_asset }}
-      PLATFORM_TESTS_SHA256: ${{ inputs.platform_tests_sha256 }}
-      RUN_PLATFORM_TESTS: ${{ inputs.run_platform_tests }}
-
+  package-x64:
+    name: Package universal candidate
+    runs-on: windows-2025
+    timeout-minutes: 90
     steps:
-      - name: Check out distribution metadata
-        # v4.2.2
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-
-      - name: Set up .NET 10 SDK
-        # v4.3.1
-        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
-        with:
-          dotnet-version: 10.0.400
-
-      - name: Verify exact .NET SDK
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with: { persist-credentials: false }
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with: { dotnet-version: 10.0.400 }
+      - name: Verify native x64 host and exact SDK
         shell: pwsh
         run: |
-          $actual = (dotnet --version).Trim()
-          if ($actual -cne '10.0.400') { throw "Expected .NET SDK 10.0.400, found $actual." }
-
+          if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'X64' -or [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture -ne 'X64') { throw 'The packaging job must run natively on x64.' }
+          if ((dotnet --version).Trim() -cne '10.0.400') { throw 'Expected .NET SDK 10.0.400.' }
       - name: Install pinned Inno Setup
         shell: pwsh
         env:
@@ -82,73 +38,118 @@ jobs:
           INNO_SHA256: 4d11e8050b6185e0d49bd9e8cc661a7a59f44959a621d31d11033124c4e8a7b0
           INNO_SIZE: 10619024
         run: |
-          $ErrorActionPreference = 'Stop'
-          $downloadPath = Join-Path $env:RUNNER_TEMP 'innosetup-6.7.1.exe'
-          Invoke-WebRequest -Uri $env:INNO_URL -OutFile $downloadPath
-          $item = Get-Item -LiteralPath $downloadPath
-          if ($item.Length -ne [int64]$env:INNO_SIZE) { throw "Inno Setup installer is $($item.Length) bytes; expected $env:INNO_SIZE." }
-          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $downloadPath).Hash.ToLowerInvariant()
-          if ($hash -cne $env:INNO_SHA256) { throw "Inno Setup installer SHA-256 is $hash; expected $env:INNO_SHA256." }
-          $signature = Get-AuthenticodeSignature -FilePath $downloadPath
-          if ($signature.Status -ne 'Valid' -or $null -eq $signature.SignerCertificate -or
-              ($signature.SignerCertificate.Subject -notmatch 'Pyrsys B\.V\.' -and $signature.SignerCertificate.Issuer -notmatch 'Pyrsys B\.V\.')) {
-            throw 'Inno Setup installer did not pass Pyrsys B.V. Authenticode verification.'
-          }
-          $installDir = Join-Path $env:RUNNER_TEMP 'inno-6.7.1'
-          if (Test-Path -LiteralPath $installDir) { Remove-Item -LiteralPath $installDir -Recurse -Force }
-          New-Item -ItemType Directory -Force -Path $installDir | Out-Null
-          $process = Start-Process -FilePath $downloadPath -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', ("/DIR=`"$installDir`"") -Wait -PassThru
-          if ($process.ExitCode -ne 0) { throw "Inno Setup installer exited with $($process.ExitCode)." }
-          $iscc = Join-Path $installDir 'ISCC.exe'
-          if (-not (Test-Path -LiteralPath $iscc -PathType Leaf)) { throw 'Pinned Inno Setup install did not produce ISCC.exe.' }
-          # This compiler intentionally exposes 0.0.0.0 in both PE version
-          # string fields. The actual installer script therefore validates
-          # ISPP's authoritative PREPROCVER value when ISCC compiles it.
-          Split-Path -Parent $iscc | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      - name: Verify distribution pins and provenance gates
+          $download = Join-Path $env:RUNNER_TEMP 'innosetup-6.7.1.exe'
+          Invoke-WebRequest -Uri $env:INNO_URL -OutFile $download
+          if ((Get-Item $download).Length -ne [int64]$env:INNO_SIZE) { throw 'Inno Setup size mismatch.' }
+          if ((Get-FileHash $download -Algorithm SHA256).Hash.ToLowerInvariant() -cne $env:INNO_SHA256) { throw 'Inno Setup hash mismatch.' }
+          $signature = Get-AuthenticodeSignature $download
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Pyrsys B\.V\.') { throw 'Inno Setup signature mismatch.' }
+          $destination = Join-Path $env:RUNNER_TEMP 'inno-6.7.1'
+          $process = Start-Process $download -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',("/DIR=`"$destination`"") -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Inno Setup install failed with $($process.ExitCode)." }
+          $destination | Out-File $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Verify static contracts
         shell: pwsh
-        run: ./scripts/Test-DistributionPins.ps1
-
-      - name: Verify exact release selection regression
-        shell: pwsh
-        run: ./scripts/Test-ReleaseSelection.ps1
-
-      - name: Validate bootstrap assets, run Windows tests, and package
+        run: |
+          ./scripts/Test-DistributionPins.ps1
+          ./scripts/Test-ReleaseSelection.ps1
+      - name: Build universal candidate and validate x64
         shell: pwsh
         env:
-          # github.token is scoped to this distribution repository. It is used
-          # only for same-repository draft/release asset GETs; the script clears
-          # GH_TOKEN and GITHUB_TOKEN before starting any precompiled app,
-          # test, compiler, or installer child process.
           GITHUB_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          RELEASE_TAG: ${{ inputs.bootstrap_release_tag }}
+          X64_PORTABLE_SHA: ${{ inputs.x64_portable_sha256 }}
+          ARM64_PORTABLE_SHA: ${{ inputs.arm64_portable_sha256 }}
+          X64_TESTS_SHA: ${{ inputs.x64_platform_tests_sha256 }}
         run: |
-          $ErrorActionPreference = 'Stop'
-          # Validate-Distribution.ps1 enables VOICE_DICTATION_UIA_FIXTURE only
-          # around the hosted Windows Platform.Tests process.
-          $runTests = $env:RUN_PLATFORM_TESTS -eq 'true'
-          $arguments = @{
-            Version = $env:BOOTSTRAP_VERSION
-            PortableAssetName = $env:PORTABLE_ASSET
-            PortableSha256 = $env:PORTABLE_SHA256
-            PlatformTestsAssetName = $env:PLATFORM_TESTS_ASSET
-            PlatformTestsSha256 = $env:PLATFORM_TESTS_SHA256
-            RunPlatformTests = $runTests
-            Repository = $env:GITHUB_REPOSITORY
-            ReleaseTag = $env:BOOTSTRAP_RELEASE_TAG
-          }
-          & ./scripts/Validate-Distribution.ps1 @arguments
-          if ($LASTEXITCODE -ne 0) { throw "Distribution validation exited with code $LASTEXITCODE." }
+          ./scripts/Validate-Distribution.ps1 -Mode Package -Architecture x64 -Version $env:VERSION `
+            -PortableAssetName "Voice-Dictation-Windows-x64-$env:VERSION-Portable.zip" -PortableSha256 $env:X64_PORTABLE_SHA `
+            -Arm64PortableAssetName "Voice-Dictation-Windows-arm64-$env:VERSION-Portable.zip" -Arm64PortableSha256 $env:ARM64_PORTABLE_SHA `
+            -PlatformTestsAssetName "Voice-Dictation-Windows-x64-$env:VERSION-Platform.Tests.zip" -PlatformTestsSha256 $env:X64_TESTS_SHA `
+            -Repository $env:GITHUB_REPOSITORY -ReleaseTag $env:RELEASE_TAG
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-${{ inputs.version }}-candidate
+          path: |
+            artifacts/Voice-Dictation-Windows-${{ inputs.version }}-Setup.exe
+            artifacts/Voice-Dictation-Windows-x64-${{ inputs.version }}-Portable.zip
+            artifacts/Voice-Dictation-Windows-arm64-${{ inputs.version }}-Portable.zip
+            artifacts/SHA256SUMS.json
+            artifacts/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 2
 
-      - name: Upload validated distribution artifact
-        # v4.6.2
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+  validate-x64:
+    name: Validate same candidate on native Windows x64
+    needs: package-x64
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with: { persist-credentials: false }
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with: { dotnet-version: 10.0.400 }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with: { name: "windows-${{ inputs.version }}-candidate", path: candidate }
+      - name: Validate native x64 tests, install, self-test, and inference
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          RELEASE_TAG: ${{ inputs.bootstrap_release_tag }}
+          X64_PORTABLE_SHA: ${{ inputs.x64_portable_sha256 }}
+          X64_TESTS_SHA: ${{ inputs.x64_platform_tests_sha256 }}
+        run: |
+          if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'X64' -or [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture -ne 'X64') { throw 'This job must run natively on x64.' }
+          if ((dotnet --version).Trim() -cne '10.0.400') { throw 'Expected .NET SDK 10.0.400.' }
+          ./scripts/Validate-Distribution.ps1 -Mode Native -Architecture x64 -Version $env:VERSION -CandidateRoot ./candidate `
+            -PortableSha256 $env:X64_PORTABLE_SHA `
+            -PlatformTestsAssetName "Voice-Dictation-Windows-x64-$env:VERSION-Platform.Tests.zip" -PlatformTestsSha256 $env:X64_TESTS_SHA `
+            -Repository $env:GITHUB_REPOSITORY -ReleaseTag $env:RELEASE_TAG
+
+  validate-arm64:
+    name: Validate same candidate on native Windows 11 ARM64
+    needs: package-x64
+    runs-on: windows-11-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with: { persist-credentials: false }
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with: { dotnet-version: 10.0.400 }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with: { name: "windows-${{ inputs.version }}-candidate", path: candidate }
+      - name: Validate native ARM64 tests, install, self-test, and inference
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          RELEASE_TAG: ${{ inputs.bootstrap_release_tag }}
+          ARM64_PORTABLE_SHA: ${{ inputs.arm64_portable_sha256 }}
+          ARM64_TESTS_SHA: ${{ inputs.arm64_platform_tests_sha256 }}
+        run: |
+          if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'Arm64' -or [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture -ne 'Arm64') { throw 'This job must run natively on ARM64.' }
+          ./scripts/Validate-Distribution.ps1 -Mode Native -Architecture arm64 -Version $env:VERSION -CandidateRoot ./candidate `
+            -PortableSha256 $env:ARM64_PORTABLE_SHA `
+            -PlatformTestsAssetName "Voice-Dictation-Windows-arm64-$env:VERSION-Platform.Tests.zip" -PlatformTestsSha256 $env:ARM64_TESTS_SHA `
+            -Repository $env:GITHUB_REPOSITORY -ReleaseTag $env:RELEASE_TAG
+
+  publish-validated:
+    name: Expose only the two-architecture validated candidate
+    needs: [package-x64, validate-x64, validate-arm64]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with: { name: "windows-${{ inputs.version }}-candidate", path: candidate }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: voice-dictation-windows-${{ inputs.version }}
           path: |
-            artifacts/Voice-Dictation-Windows-x64-${{ inputs.version }}-Setup.exe
-            artifacts/Voice-Dictation-Windows-x64-${{ inputs.version }}-Portable.zip
-            artifacts/SHA256SUMS.json
-            artifacts/SHA256SUMS.txt
+            candidate/Voice-Dictation-Windows-${{ inputs.version }}-Setup.exe
+            candidate/Voice-Dictation-Windows-x64-${{ inputs.version }}-Portable.zip
+            candidate/Voice-Dictation-Windows-arm64-${{ inputs.version }}-Portable.zip
+            candidate/SHA256SUMS.json
+            candidate/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
