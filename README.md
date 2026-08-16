@@ -78,9 +78,10 @@ mismatched, or cross-version asset.
 ## What the workflow validates
 
 The packaging job runs natively on GitHub's x64 `windows-2025` image, builds one
-universal installer, and validates x64. A second job downloads that exact candidate
-and validates it natively on the official Windows 11 ARM64 `windows-11-arm` image.
-The jobs install the pinned .NET 10 SDK; the packaging job installs Inno Setup and checks
+universal installer, and validates archive hashes/structure plus native PE metadata
+without executing candidate files. Separate jobs download that immutable candidate
+and validate it natively on `windows-2025` x64 and the official Windows 11 ARM64
+`windows-11-arm` image. The jobs install the pinned .NET 10 SDK; the packaging job installs Inno Setup and checks
 the caller-supplied hashes, rejects source/debug material, verifies the
 Microsoft Authenticode signature and pinned metadata/hash on the VC++ runtime,
 and independently parses the PE headers of `VoiceDictation.exe` and Whisper DLLs,

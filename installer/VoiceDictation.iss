@@ -132,6 +132,8 @@ end;
 
 function OpenProcess(DesiredAccess: Cardinal; InheritHandle: Boolean; ProcessId: Cardinal): THandle;
   external 'OpenProcess@kernel32.dll stdcall';
+function GetLastError: Cardinal;
+  external 'GetLastError@kernel32.dll stdcall';
 function WaitForSingleObject(Handle: THandle; Milliseconds: Cardinal): Cardinal;
   external 'WaitForSingleObject@kernel32.dll stdcall';
 function CloseHandle(Handle: THandle): Boolean;
@@ -147,7 +149,10 @@ begin
   Pid := GetParentPid;
   if Pid = 0 then begin Result := False; Exit; end;
   ProcessHandle := OpenProcess($00100000, False, Pid);
-  if ProcessHandle = 0 then Exit;
+  if ProcessHandle = 0 then begin
+    Result := GetLastError = 87; // ERROR_INVALID_PARAMETER means the parent PID no longer exists.
+    Exit;
+  end;
   try
     Result := WaitForSingleObject(ProcessHandle, 120000) = 0;
   finally

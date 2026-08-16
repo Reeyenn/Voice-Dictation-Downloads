@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   package-x64:
-    name: Package and validate native x64
+    name: Package universal candidate
     runs-on: windows-2025
     timeout-minutes: 90
     steps:
@@ -80,6 +80,34 @@ jobs:
           if-no-files-found: error
           retention-days: 2
 
+  validate-x64:
+    name: Validate same candidate on native Windows x64
+    needs: package-x64
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with: { persist-credentials: false }
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with: { dotnet-version: 10.0.400 }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with: { name: "windows-${{ inputs.version }}-candidate", path: candidate }
+      - name: Validate native x64 tests, install, self-test, and inference
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          RELEASE_TAG: ${{ inputs.bootstrap_release_tag }}
+          X64_PORTABLE_SHA: ${{ inputs.x64_portable_sha256 }}
+          X64_TESTS_SHA: ${{ inputs.x64_platform_tests_sha256 }}
+        run: |
+          if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'X64' -or [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture -ne 'X64') { throw 'This job must run natively on x64.' }
+          if ((dotnet --version).Trim() -cne '10.0.400') { throw 'Expected .NET SDK 10.0.400.' }
+          ./scripts/Validate-Distribution.ps1 -Mode Native -Architecture x64 -Version $env:VERSION -CandidateRoot ./candidate `
+            -PortableSha256 $env:X64_PORTABLE_SHA `
+            -PlatformTestsAssetName "Voice-Dictation-Windows-x64-$env:VERSION-Platform.Tests.zip" -PlatformTestsSha256 $env:X64_TESTS_SHA `
+            -Repository $env:GITHUB_REPOSITORY -ReleaseTag $env:RELEASE_TAG
+
   validate-arm64:
     name: Validate same candidate on native Windows 11 ARM64
     needs: package-x64
@@ -109,7 +137,7 @@ jobs:
 
   publish-validated:
     name: Expose only the two-architecture validated candidate
-    needs: [package-x64, validate-arm64]
+    needs: [package-x64, validate-x64, validate-arm64]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093

@@ -613,7 +613,11 @@ function Assert-PlatformTestsResults([string]$ResultsDirectory, [int]$MinimumTes
     Write-Host "Platform.Tests TRX passed: total=$total executed=$executed passed=$passed failed=$failed notExecuted=$notExecuted."
 }
 
-function Assert-PlatformTestsArchive([string]$Path, [ValidateSet('x64', 'arm64')][string]$ExpectedArchitecture) {
+function Assert-PlatformTestsArchive(
+    [string]$Path,
+    [ValidateSet('x64', 'arm64')][string]$ExpectedArchitecture,
+    [bool]$ExecuteTests = $true
+) {
     $entries = @(Get-ZipEntries $Path | Where-Object { -not $_.IsDirectory })
     $badFiles = @($entries | Where-Object {
         $_.Name -match '(?i)\.(?:pdb|xml|cs|csproj|sln|props|targets)$'
@@ -659,6 +663,10 @@ function Assert-PlatformTestsArchive([string]$Path, [ValidateSet('x64', 'arm64')
     Assert-PeArchitecture $testApp $ExpectedArchitecture 'Platform.Tests VoiceDictation.exe'
     foreach ($relative in $expectedRuntime) {
         Assert-PeArchitecture (Join-Path $testsStage ($relative.Replace('/', '\'))) $ExpectedArchitecture "Platform.Tests runtime $relative"
+    }
+    if (-not $ExecuteTests) {
+        Write-Host "Platform.Tests $ExpectedArchitecture archive structure, hash, and PE metadata passed; execution is deferred to native validation."
+        return
     }
     $dotnet = Get-Command dotnet.exe -ErrorAction SilentlyContinue
     if ($null -eq $dotnet) { Fail "dotnet.exe is required to run Platform.Tests." }
@@ -973,7 +981,7 @@ try {
     Clear-WorkflowTokens
 
     if ($RunPlatformTests) {
-        Assert-PlatformTestsArchive $PlatformTestsZipPath $expectedPrimaryArchitecture
+        Assert-PlatformTestsArchive -Path $PlatformTestsZipPath -ExpectedArchitecture $expectedPrimaryArchitecture -ExecuteTests:($Mode -eq 'Native')
     }
 
     if ($Mode -eq 'Native') {
@@ -1049,7 +1057,7 @@ try {
 
     # These two files are compiler inputs only. Inno has embedded them in the
     # copied setup now, so remove exactly those scratch files before the final
-    # output allowlist and installer/inference smoke checks.
+    # output allowlist and manifest generation.
     foreach ($scratchInput in @($vcRedist, $vcRedistEvidence)) {
         if (Test-Path -LiteralPath $scratchInput) {
             $scratchItem = Get-Item -LiteralPath $scratchInput
@@ -1069,9 +1077,6 @@ try {
     )
     $unexpectedOutput = @(Get-ChildItem -LiteralPath $output -File | Where-Object { $_.Name -notin $expectedOutputNames })
     if ($unexpectedOutput.Count -gt 0) { Fail "OutputRoot contains unexpected release files: $($unexpectedOutput.Name -join ', ')" }
-
-    Invoke-InstallerSmoke $setupOut $Version 'x64'
-    Invoke-PinnedInference $portableExe
 
     $releaseFiles = @($setupOut, $x64PortableOut, $arm64PortableOut)
     $manifest = @($releaseFiles | ForEach-Object {
