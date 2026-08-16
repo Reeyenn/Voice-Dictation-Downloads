@@ -28,7 +28,21 @@ Lacks $macValidator 'Voice-Dictation.git' 'macOS validator'
 Lacks $workflow 'Package and validate native x64' 'Workflow'
 Lacks $workflow 'run_platform_tests' 'Workflow'
 Lacks $workflow 'windows-latest' 'Workflow'
-foreach ($needle in @("'0.8.0' = [pscustomobject]@{",$vcPin,'Assert-NativeHost','MinimumWindowsBuild','19045','0xAA64','0x8664','Voice-Dictation-Windows-$Version-Setup.exe','windows-universal','windows-arm64','windows-x64','Get-ValidatedCandidateArtifacts','Invoke-PinnedInference','Invoke-WindowsExecutableTimed','Timed inference measurements','VOICE_DICTATION_UIA_FIXTURE','portable.flag','runtimes\win-arm64','runtimes\noavx\win-x64','ExecuteTests','-ExecuteTests:($Mode -eq ''Native'')','archive structure, hash, and PE metadata passed','function Get-VoiceBackgroundProcesses','function Invoke-UpdateModeSmoke','/VOICEUPDATE=1','/UPDATEINSTALLDIR=','/PARENTPID=','WaitForExit(180000)','--background','Get-CimInstance -ClassName Win32_Process')) { Has $validator $needle 'Validator' }
+foreach ($needle in @("'0.8.0' = [pscustomobject]@{",$vcPin,'Assert-NativeHost','MinimumWindowsBuild','19045','0xAA64','0x8664','Voice-Dictation-Windows-$Version-Setup.exe','windows-universal','windows-arm64','windows-x64','Get-ValidatedCandidateArtifacts','Invoke-PinnedInference','Invoke-WindowsExecutableTimed','Timed inference measurements','VOICE_DICTATION_UIA_FIXTURE','portable.flag','runtimes\win-arm64','runtimes\noavx\win-x64','ExecuteTests','-ExecuteTests:($Mode -eq ''Native'')','archive structure, hash, and PE metadata passed','function Get-VoiceBackgroundProcesses','function Invoke-UpdateModeSmoke','/VOICEUPDATE=1','/UPDATEINSTALLDIR=','/PARENTPID=','WaitForExit(180000)','--background','Get-CimInstance -ClassName Win32_Process','function Clear-WorkflowTokens','$script:GitHubToken = $null','GITHUB_API_TOKEN','ACTIONS_RUNTIME_TOKEN','RUNNER_TOKEN','inferenceTimeoutMilliseconds = 300000','WaitForExit($inferenceTimeoutMilliseconds)','Stop-Process -Id $process.Id -Force')) { Has $validator $needle 'Validator' }
+$timedStart = $validator.IndexOf('function Invoke-WindowsExecutableTimed', [StringComparison]::Ordinal)
+$timedEnd = $validator.IndexOf('function Get-VoiceBackgroundProcesses', [StringComparison]::Ordinal)
+if ($timedStart -lt 0 -or $timedEnd -le $timedStart) { throw 'Timed inference helper boundaries are missing.' }
+$timedBody = $validator.Substring($timedStart, $timedEnd - $timedStart)
+if ($timedBody.Contains(' -Wait')) { throw 'Timed inference helper must not use unbounded Start-Process -Wait.' }
+$nativeScrubAnchor = $validator.IndexOf('# The built-in token is needed', [StringComparison]::Ordinal)
+if ($nativeScrubAnchor -lt 0) { throw 'Windows validator auth scrub anchor is missing.' }
+$nativeScrub = $validator.IndexOf('    Clear-WorkflowTokens', $nativeScrubAnchor, [StringComparison]::Ordinal)
+$nativeTests = $validator.IndexOf('Assert-PlatformTestsArchive -Path $PlatformTestsZipPath', $nativeScrubAnchor, [StringComparison]::Ordinal)
+$nativeInstaller = $validator.IndexOf('Invoke-InstallerSmoke $setupPath', $nativeScrubAnchor, [StringComparison]::Ordinal)
+$nativeInference = $validator.IndexOf('Invoke-PinnedInference $portableExe', $nativeScrubAnchor, [StringComparison]::Ordinal)
+if ($nativeScrub -lt 0 -or $nativeTests -lt 0 -or $nativeInstaller -lt 0 -or $nativeInference -lt 0 -or $nativeScrub -ge $nativeTests -or $nativeScrub -ge $nativeInstaller -or $nativeScrub -ge $nativeInference) {
+    throw 'Windows validator must scrub auth before any downloaded test host, installer, or inference process.'
+}
 foreach ($needle in @('#define APP_VERSION "0.8.0"','ArchitecturesAllowed=x64compatible arm64','ArchitecturesInstallIn64BitMode=x64compatible arm64','DisableDirPage=yes','OutputBaseFilename=Voice-Dictation-Windows-{#AppVersion}-Setup','Check: IsX64Install','Check: IsArm64Install','AppMutex={code:GetAppMutex}','GetLastError@kernel32.dll stdcall','Result := GetLastError = 87','Result := (not IsVoiceUpdateMode) and (not WizardSilent);','ExistingApp := ExpandConstant(''{app}\VoiceDictation.exe'');','Result := Exec(ExistingApp, ''--background'', '''', SW_SHOWNORMAL, ewNoWait, ResultCode);','UpdateSucceeded := LaunchInstalledApplication;','if not UpdateSucceeded then','Voice Dictation could not be started automatically.')) { Has $installer $needle 'Installer' }
 Lacks $installer 'Result := IsVoiceUpdateMode or (not WizardSilent);' 'Installer'
 if ([regex]::IsMatch($installer, '(?ms)procedure\s+DeinitializeSetup\s*;\s*var\b')) {
@@ -52,6 +66,8 @@ foreach ($needle in @('function Wait-ForInstallRootRemoval','Wait-ForInstallRoot
 if ([regex]::Matches($validator, 'Wait-ForInstallRootRemoval \$').Count -ne 4) {
     throw 'Each native installer smoke uninstall must wait for its isolated install root to disappear.'
 }
-foreach ($needle in @('Windows 11 x64 and ARM64','windows-11-arm','windows-2025','0.8.0')) { Has $readme $needle 'README' }
+foreach ($needle in @('Windows 10 22H2 x64/ARM64','Windows 11 x64/ARM64','windows-11-arm','windows-2025','0.8.0')) { Has $readme $needle 'README' }
+foreach ($needle in @('Windows Server 2022 x64 build 20348','validator machine-readable')) { Has $readme $needle 'README' }
+Lacks $readme "worker's machine-readable" 'README'
 Lacks $readme 'Windows on ARM64' 'README'
 Write-Host 'Distribution dual-architecture pin and provenance checks passed.'

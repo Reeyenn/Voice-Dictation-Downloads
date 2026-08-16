@@ -39,6 +39,9 @@ for required in \
   'codesign --verify --deep --strict'; do
   require_text "$VALIDATOR" "$required"
 done
+require_text "$VALIDATOR" 'clear_workflow_tokens'
+require_text "$VALIDATOR" 'unset GITHUB_TOKEN GH_TOKEN'
+require_text "$VALIDATOR" 'TOKEN AUTH_HEADER'
 
 if grep -Eiq 'swift[[:space:]]+test|xcodebuild|git[[:space:]]+(clone|fetch)|Voice-Dictation\.git' "$WORKFLOW" "$VALIDATOR"; then
   fail 'binary-only validation must not build or fetch private source'
@@ -48,6 +51,13 @@ if grep -Fq 'VD_INTEL_VALIDATION_' "$VALIDATOR"; then
 fi
 if grep -Fq 'run-intel-validation.sh' "$VALIDATOR"; then
   fail 'macOS validation launcher must be architecture-neutral'
+fi
+
+scrub_line="$(grep -n '^clear_workflow_tokens$' "$VALIDATOR" | tail -n 1 | cut -d: -f1)"
+open_line="$(grep -n '^open -n ' "$VALIDATOR" | head -n 1 | cut -d: -f1)"
+runner_line="$(grep -n 'VALIDATION_EXE.*--max-latency-seconds' "$VALIDATOR" | head -n 1 | cut -d: -f1)"
+if [[ -z "$scrub_line" || -z "$open_line" || -z "$runner_line" || "$scrub_line" -ge "$open_line" || "$scrub_line" -ge "$runner_line" ]]; then
+  fail 'token scrub must occur after downloads and before app or validator launch'
 fi
 
 bash -n "$VALIDATOR"

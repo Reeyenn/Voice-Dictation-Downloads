@@ -23,6 +23,10 @@ fail() {
   exit 1
 }
 
+clear_workflow_tokens() {
+  unset GITHUB_TOKEN GH_TOKEN GITHUB_API_TOKEN GH_ENTERPRISE_TOKEN GITHUB_APP_TOKEN ACTIONS_RUNTIME_TOKEN RUNNER_TOKEN TOKEN AUTH_HEADER
+}
+
 require_tool() {
   command -v "$1" >/dev/null 2>&1 || fail "required tool is missing: $1"
 }
@@ -151,6 +155,7 @@ assert_sha256 "$APP_ZIP" "$APP_SHA256" "$APP_ASSET"
 assert_sha256 "$VALIDATION_ZIP" "$VALIDATION_SHA256" "$VALIDATION_ASSET"
 unzip -tqq "$APP_ZIP" || fail "$APP_ASSET failed ZIP integrity validation"
 unzip -tqq "$VALIDATION_ZIP" || fail "$VALIDATION_ASSET failed ZIP integrity validation"
+clear_workflow_tokens
 
 validate_archive_entries() {
   local archive="$1"

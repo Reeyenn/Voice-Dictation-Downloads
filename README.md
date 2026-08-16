@@ -6,7 +6,8 @@ Inno Setup recipe, the application icon, and the portable-package prerequisite
 notice. It deliberately contains no application source, debug symbols, private
 repository credentials, or build outputs.
 
-The application is distributed as prebuilt Windows 11 x64/ARM64 and Windows Server 2022 x64 beta archives. The source
+The application is distributed as prebuilt Windows 10 22H2 x64/ARM64
+(build 19045+) and Windows 11 x64/ARM64 beta archives. The source
 build remains private; a maintainer uploads versioned bootstrap archives to a
 draft or published release in this repository, then manually dispatches the
 validation workflow with the exact SHA-256 values. The workflow downloads only
@@ -14,18 +15,17 @@ those assets from this repository with its automatically scoped `GITHUB_TOKEN`,
 validates them, compiles the installer, and uploads a short-lived Actions
 artifact. The workflow has only the repository `contents: write` permission
 because GitHub's draft-release asset endpoint requires that scope; the script
-uses it for GET requests only and clears both token environment variables
+uses it for GET requests only and clears token environment variables
 before launching any downloaded app, test host, compiler, or installer. It
 does not run on pushes or pull requests and it cannot access the private source
 repository.
 
 ## Supported product
 
-- Windows 11 x64 and ARM64, plus Windows Server 2022 x64, are native validation targets.
+- Windows 10 22H2 x64/ARM64 (build 19045+) and Windows 11 x64/ARM64 are supported beta targets.
+- The native hosted proof covers Windows 11 x64/ARM64 plus Windows Server 2022 x64 build 20348. Server 2022 is compatibility evidence from the pre-Windows-11 server line, not literal Windows 10 hardware proof.
 - The product and installer floor is Windows build 19045 or newer. The native validator records the exact host build and rejects lower builds.
-- Windows Server 2022 build 20348 is compatibility evidence from the pre-Windows-11 server line; this workflow does not claim native Windows 10 hardware coverage.
-- Windows 10, Microsoft Store/MSIX packaging, accounts, and
-  cloud sync are outside this beta.
+- Microsoft Store/MSIX packaging, accounts, and cloud sync are outside this beta.
 - The portable package keeps microphone audio and transcripts in memory. The
   included `vc_redist.x64.exe` is the official Microsoft Visual C++ v14 x64
   runtime used by the native speech-recognition dependency on clean machines.
@@ -98,7 +98,7 @@ ZIP, the freshly compiled setup executable, and text/JSON SHA-256 manifests.
 
 The hosted runners cannot prove every physical microphone, global shortcut,
 foreground editor, UI Automation, or user security-policy combination. This
-repository therefore keeps the product claim at **Windows 11 x64/ARM64 and Windows Server 2022 x64 beta**.
+repository therefore keeps the product claim at **Windows 10 22H2 x64/ARM64 and Windows 11 x64/ARM64 beta**; Server 2022 is separately reported as compatibility evidence.
 
 ## macOS binary-only validation
 
@@ -121,7 +121,7 @@ actual LaunchServices start on each host.
 The validation ZIP must contain the root
 `Voice-Dictation-MacValidation/VoiceDictationMacValidation` executable and
 `run-mac-validation.sh`. The executable is invoked directly on each native
-host with fixed WER/latency gates and must emit the worker's machine-readable
+host with fixed WER/latency gates and must emit the validator machine-readable
 records before exiting successfully:
 
 ```text

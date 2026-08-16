@@ -278,11 +278,12 @@ function Assert-VcRedistEvidence([string]$Path, [pscustomobject]$Pin, [string]$L
 
 function Clear-WorkflowTokens {
     # Release API calls are completed before this function is called. Clearing
-    # both conventional variables prevents a downloaded/precompiled child
-    # process from inheriting a repository token through either name.
-    foreach ($name in @('GITHUB_TOKEN', 'GH_TOKEN')) {
+    # all conventional variables prevents a downloaded/precompiled child
+    # process from inheriting a repository token through any common name.
+    foreach ($name in @('GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_API_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_APP_TOKEN', 'ACTIONS_RUNTIME_TOKEN', 'RUNNER_TOKEN')) {
         [Environment]::SetEnvironmentVariable($name, $null, 'Process')
     }
+    $script:GitHubToken = $null
 }
 
 function Get-RegistryRunValueState([string]$RunKeyPath, [string]$RunValueName) {
@@ -738,12 +739,24 @@ function Invoke-WindowsExecutable([string]$Path, [string[]]$Arguments, [string]$
 function Invoke-WindowsExecutableTimed([string]$Path, [string[]]$Arguments, [string]$Label) {
     Clear-WorkflowTokens
     $timer = [System.Diagnostics.Stopwatch]::StartNew()
-    $process = Start-Process -FilePath $Path -ArgumentList $Arguments -WorkingDirectory (Split-Path -Parent $Path) -WindowStyle Hidden -Wait -PassThru
-    $timer.Stop()
-    if ($process.ExitCode -ne 0) {
-        Fail "$Label failed with exit code $($process.ExitCode)."
+    $process = $null
+    $inferenceTimeoutMilliseconds = 300000
+    try {
+        $process = Start-Process -FilePath $Path -ArgumentList $Arguments -WorkingDirectory (Split-Path -Parent $Path) -WindowStyle Hidden -PassThru
+        if (-not $process.WaitForExit($inferenceTimeoutMilliseconds)) {
+            try { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue } catch { }
+            try { $process.WaitForExit(5000) | Out-Null } catch { }
+            Fail "$Label exceeded the bounded $inferenceTimeoutMilliseconds ms timeout."
+        }
+        if ($process.ExitCode -ne 0) {
+            Fail "$Label failed with exit code $($process.ExitCode)."
+        }
+        $timer.Stop()
+        return $timer.Elapsed.TotalSeconds
+    } finally {
+        $timer.Stop()
+        if ($null -ne $process) { $process.Dispose() }
     }
-    return $timer.Elapsed.TotalSeconds
 }
 
 function Get-VoiceBackgroundProcesses([string]$ExecutablePath) {
@@ -1194,7 +1207,7 @@ try {
 
     # The built-in token is needed only for the release-asset API calls. Do not
     # let a precompiled app, test host, compiler, or installer child process
-    # inherit it through either conventional environment variable.
+    # inherit it through any conventional environment variable.
     Clear-WorkflowTokens
 
     if ($RunPlatformTests) {
