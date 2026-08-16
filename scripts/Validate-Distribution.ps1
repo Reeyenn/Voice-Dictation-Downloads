@@ -16,6 +16,7 @@ param(
     [string]$CandidateRoot,
     [string]$Repository,
     [string]$ReleaseTag,
+    [ValidateRange(19045, 99999)][int]$MinimumWindowsBuild = 19045,
     [string]$OutputRoot = "$PSScriptRoot\..\artifacts",
     [string]$GitHubToken = $env:GITHUB_TOKEN
 )
@@ -192,7 +193,10 @@ function Assert-PeArchitecture([string]$Path, [ValidateSet('x64', 'arm64')][stri
     }
 }
 
-function Assert-NativeHost([ValidateSet('x64', 'arm64')][string]$ExpectedArchitecture) {
+function Assert-NativeHost(
+    [ValidateSet('x64', 'arm64')][string]$ExpectedArchitecture,
+    [ValidateRange(19045, 99999)][int]$MinimumBuild = 19045
+) {
     if ([System.Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
         Fail 'Native validation requires Windows.'
     }
@@ -206,8 +210,9 @@ function Assert-NativeHost([ValidateSet('x64', 'arm64')][string]$ExpectedArchite
     if ($osArchitecture -ne $expected -or $processArchitecture -ne $expected) {
         Fail "Native $ExpectedArchitecture evidence requires both OS and validator process architecture $expected; found OS=$osArchitecture Process=$processArchitecture."
     }
-    if ([System.Environment]::OSVersion.Version.Build -lt 22621) {
-        Fail "Windows build $([System.Environment]::OSVersion.Version.Build) is below the supported 22621 baseline."
+    $build = [System.Environment]::OSVersion.Version.Build
+    if ($build -lt $MinimumBuild) {
+        Fail "Windows build $build is below the required $MinimumBuild baseline."
     }
     Write-Host "Native host passed: architecture=$expected build=$([System.Environment]::OSVersion.Version.Build)."
 }
@@ -730,6 +735,17 @@ function Invoke-WindowsExecutable([string]$Path, [string[]]$Arguments, [string]$
     }
 }
 
+function Invoke-WindowsExecutableTimed([string]$Path, [string[]]$Arguments, [string]$Label) {
+    Clear-WorkflowTokens
+    $timer = [System.Diagnostics.Stopwatch]::StartNew()
+    $process = Start-Process -FilePath $Path -ArgumentList $Arguments -WorkingDirectory (Split-Path -Parent $Path) -WindowStyle Hidden -Wait -PassThru
+    $timer.Stop()
+    if ($process.ExitCode -ne 0) {
+        Fail "$Label failed with exit code $($process.ExitCode)."
+    }
+    return $timer.Elapsed.TotalSeconds
+}
+
 function Get-VoiceBackgroundProcesses([string]$ExecutablePath) {
     if (-not (Test-Path -LiteralPath $ExecutablePath -PathType Leaf)) {
         return @()
@@ -940,15 +956,16 @@ function Invoke-PinnedInference([string]$ExecutablePath) {
     Assert-FileSha256 $samplePath $sampleSha256 'Pinned JFK sample'
     Write-SilenceWave $silencePath
 
-    Invoke-WindowsExecutable $ExecutablePath @(
+    $phraseSeconds = Invoke-WindowsExecutableTimed $ExecutablePath @(
         '--inference-test', '--model', (Quote-ProcessArgument $modelPath),
         '--audio', (Quote-ProcessArgument $samplePath), '--expect-text',
         (Quote-ProcessArgument 'And so my fellow Americans'), '--max-deviation', '0.55'
     ) 'Known-phrase inference'
-    Invoke-WindowsExecutable $ExecutablePath @(
+    $silenceSeconds = Invoke-WindowsExecutableTimed $ExecutablePath @(
         '--inference-test', '--model', (Quote-ProcessArgument $modelPath),
         '--audio', (Quote-ProcessArgument $silencePath), '--expect-empty'
     ) 'Silence anti-hallucination inference'
+    Write-Host ("Timed inference measurements: phrase_seconds={0:F3} silence_seconds={1:F3}" -f $phraseSeconds, $silenceSeconds)
     Write-Host 'Pinned Whisper model, JFK phrase, and silence inference passed.'
 }
 
@@ -1141,7 +1158,7 @@ if ($Mode -eq 'Package') {
 
 try {
     New-Item -ItemType Directory -Force -Path $downloadRoot | Out-Null
-    Assert-NativeHost $Architecture
+    Assert-NativeHost -ExpectedArchitecture $Architecture -MinimumBuild $MinimumWindowsBuild
 
     if ($Mode -eq 'Native') {
         $candidate = Get-ValidatedCandidateArtifacts $CandidateRoot $Version
