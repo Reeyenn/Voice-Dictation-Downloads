@@ -100,4 +100,7 @@ Assert-Contains $installer 'RegDeleteValue' 'Public installer'
 Assert-Contains $installer 'CurUninstallStepChanged' 'Public installer'
 Assert-Contains $installer 'README.txt' 'Public installer'
 Assert-NotContains $installer 'uninsdeletevalue' 'Public installer'
+if ($installer -match '(?ms)procedure\s+RemoveOwnedStartupValue\s*;\s*const\b') {
+    throw 'RemoveOwnedStartupValue must not declare a local const block unsupported by the pinned Inno compiler.'
+}
 Write-Host 'Distribution pin and provenance static checks passed.'
