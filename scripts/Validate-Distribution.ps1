@@ -730,6 +730,190 @@ function Invoke-WindowsExecutable([string]$Path, [string[]]$Arguments, [string]$
     }
 }
 
+function Get-VoiceBackgroundProcesses([string]$ExecutablePath) {
+    if (-not (Test-Path -LiteralPath $ExecutablePath -PathType Leaf)) {
+        return @()
+    }
+    $expectedPath = [System.IO.Path]::GetFullPath($ExecutablePath)
+    try {
+        $candidates = @(Get-CimInstance -ClassName Win32_Process -Filter "Name = 'VoiceDictation.exe'")
+    } catch {
+        Fail "Could not inspect VoiceDictation.exe processes for the updater smoke: $($_.Exception.Message)"
+    }
+    return @($candidates | Where-Object {
+        $candidatePath = [string]$_.ExecutablePath
+        $commandLine = [string]$_.CommandLine
+        if ([string]::IsNullOrWhiteSpace($candidatePath) -or
+            [string]::IsNullOrWhiteSpace($commandLine)) {
+            return $false
+        }
+        try {
+            ([System.IO.Path]::GetFullPath($candidatePath)).Equals(
+                $expectedPath,
+                [System.StringComparison]::OrdinalIgnoreCase
+            ) -and $commandLine -match '(?i)(^|\s)--background(?:\s|$)'
+        } catch {
+            return $false
+        }
+    })
+}
+
+function Stop-VoiceBackgroundProcesses([string]$ExecutablePath, [string]$Label) {
+    $processes = @(Get-VoiceBackgroundProcesses $ExecutablePath)
+    foreach ($process in $processes) {
+        $processId = [int]$process.ProcessId
+        try {
+            Stop-Process -Id $processId -Force -ErrorAction Stop
+        } catch {
+            if ($null -ne (Get-Process -Id $processId -ErrorAction SilentlyContinue)) {
+                Fail "$Label process $processId could not be stopped: $($_.Exception.Message)"
+            }
+        }
+    }
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    do {
+        if (@(Get-VoiceBackgroundProcesses $ExecutablePath).Count -eq 0) { return }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $deadline)
+    Fail "$Label process did not exit within the bounded cleanup window."
+}
+
+function Invoke-UpdateModeSmoke([string]$InstallerPath, [string]$ExpectedVersion, [ValidateSet('x64', 'arm64')][string]$ExpectedArchitecture) {
+    $localAppData = [System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::LocalApplicationData)
+    if ([string]::IsNullOrWhiteSpace($localAppData)) {
+        Fail 'The hosted Windows runner did not expose a LocalAppData directory for update-mode validation.'
+    }
+    $canonicalInstallRoot = Join-Path $localAppData 'Programs\Voice Dictation'
+    $canonicalInstallRoot = [System.IO.Path]::GetFullPath($canonicalInstallRoot)
+    $canonicalExe = Join-Path $canonicalInstallRoot 'VoiceDictation.exe'
+    $canonicalUninstaller = Join-Path $canonicalInstallRoot 'unins000.exe'
+    $canonicalRootExisted = Test-Path -LiteralPath $canonicalInstallRoot
+    $canonicalInstallCreated = $false
+    $parentProcess = $null
+    $updateProcess = $null
+
+    try {
+        if ($canonicalRootExisted) {
+            Fail "Update-mode smoke refuses to overwrite a pre-existing canonical install directory: $canonicalInstallRoot"
+        }
+        if (@(Get-VoiceBackgroundProcesses $canonicalExe).Count -ne 0) {
+            Fail 'Update-mode smoke found an existing VoiceDictation.exe process at the canonical install path.'
+        }
+
+        # Seed the exact canonical location once, then exercise the updater
+        # against that same path. The runner profile is isolated, and the
+        # cleanup below removes only the install created by this smoke.
+        $initialArguments = @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-',
+            "/DIR=`"$canonicalInstallRoot`"", '/TASKS=""'
+        )
+        Clear-WorkflowTokens
+        $initialInstall = Start-Process -FilePath $InstallerPath -ArgumentList $initialArguments -Wait -PassThru
+        $canonicalInstallCreated = Test-Path -LiteralPath $canonicalInstallRoot
+        if ($initialInstall.ExitCode -ne 0) {
+            Fail "Canonical seed installer exited with code $($initialInstall.ExitCode)."
+        }
+        $canonicalInstallCreated = $true
+        if (-not (Test-Path -LiteralPath $canonicalExe -PathType Leaf)) {
+            Fail 'Canonical seed installer did not place VoiceDictation.exe.'
+        }
+        Assert-ExecutableVersion $canonicalExe $ExpectedVersion 'Canonical installed VoiceDictation.exe'
+        Assert-PeArchitecture $canonicalExe $ExpectedArchitecture 'Canonical installed VoiceDictation.exe'
+
+        $powershellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        if (-not (Test-Path -LiteralPath $powershellPath -PathType Leaf)) {
+            Fail 'Windows PowerShell is required to create the bounded updater parent fixture.'
+        }
+        # Keep the parent alive long enough that a missing or malformed
+        # PARENTPID argument cannot accidentally make the test pass. Inno's
+        # own wait is capped at two minutes; this fixture is deliberately much
+        # shorter while still exceeding normal installer startup time.
+        $parentProcess = Start-Process -FilePath $powershellPath -ArgumentList @(
+            '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', 'Start-Sleep -Seconds 15'
+        ) -WindowStyle Hidden -PassThru
+        if ($parentProcess.HasExited) {
+            Fail 'Updater parent fixture exited before the update-mode installer started.'
+        }
+
+        $updateArguments = @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-',
+            '/VOICEUPDATE=1',
+            "/UPDATEINSTALLDIR=`"$canonicalInstallRoot`"",
+            "/PARENTPID=$($parentProcess.Id)",
+            "/DIR=`"$canonicalInstallRoot`"",
+            '/TASKS=""'
+        )
+        Clear-WorkflowTokens
+        $updateTimer = [System.Diagnostics.Stopwatch]::StartNew()
+        $updateProcess = Start-Process -FilePath $InstallerPath -ArgumentList $updateArguments -PassThru
+        $updateCompleted = $updateProcess.WaitForExit(180000)
+        $updateTimer.Stop()
+        if (-not $updateCompleted) {
+            try { Stop-Process -Id $updateProcess.Id -Force -ErrorAction SilentlyContinue } catch { }
+            Fail 'Update-mode installer exceeded its bounded 180-second process timeout.'
+        }
+        if ($updateProcess.ExitCode -ne 0) {
+            Fail "Update-mode installer exited with code $($updateProcess.ExitCode)."
+        }
+        if (-not $parentProcess.HasExited) {
+            $parentProcess.WaitForExit(5000) | Out-Null
+        }
+        if (-not $parentProcess.HasExited) {
+            Fail 'Update-mode installer returned before its parent process exited; bounded parent waiting was not exercised.'
+        }
+        if ($updateTimer.Elapsed.TotalSeconds -lt 5) {
+            Fail "Update-mode installer completed in $([Math]::Round($updateTimer.Elapsed.TotalSeconds, 2)) seconds; expected the bounded parent wait to be observed."
+        }
+
+        Assert-ExecutableVersion $canonicalExe $ExpectedVersion 'Updated canonical VoiceDictation.exe'
+        Assert-PeArchitecture $canonicalExe $ExpectedArchitecture 'Updated canonical VoiceDictation.exe'
+        if ($null -ne (Get-RegistryRunValue 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' 'Voice Dictation')) {
+            Fail 'Update-mode smoke unexpectedly created an HKCU startup value.'
+        }
+
+        $backgroundProcesses = @()
+        $launchDeadline = [DateTime]::UtcNow.AddSeconds(30)
+        do {
+            $backgroundProcesses = @(Get-VoiceBackgroundProcesses $canonicalExe)
+            if ($backgroundProcesses.Count -gt 0) { break }
+            Start-Sleep -Milliseconds 250
+        } while ([DateTime]::UtcNow -lt $launchDeadline)
+        if ($backgroundProcesses.Count -ne 1) {
+            Fail "Update-mode installer did not relaunch exactly one canonical VoiceDictation.exe with --background (found $($backgroundProcesses.Count))."
+        }
+        Write-Host "Native $ExpectedArchitecture update-mode installer smoke passed: waited for parent, exited successfully, and relaunched the canonical app with --background in $([Math]::Round($updateTimer.Elapsed.TotalSeconds, 2)) seconds."
+        Stop-VoiceBackgroundProcesses $canonicalExe 'Relaunched Voice Dictation'
+    } finally {
+        if ($null -ne $updateProcess -and -not $updateProcess.HasExited) {
+            try { Stop-Process -Id $updateProcess.Id -Force -ErrorAction SilentlyContinue } catch { }
+        }
+        if ($null -ne $parentProcess -and -not $parentProcess.HasExited) {
+            try { Stop-Process -Id $parentProcess.Id -Force -ErrorAction SilentlyContinue } catch { }
+        }
+        if ($canonicalInstallCreated) {
+            $remainingBackground = @(Get-VoiceBackgroundProcesses $canonicalExe)
+            foreach ($process in $remainingBackground) {
+                try { Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction SilentlyContinue } catch { }
+            }
+            if (Test-Path -LiteralPath $canonicalUninstaller -PathType Leaf) {
+                $cleanupUninstall = Start-Process -FilePath $canonicalUninstaller -ArgumentList @(
+                    '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
+                ) -PassThru
+                if (-not $cleanupUninstall.WaitForExit(120000)) {
+                    try { Stop-Process -Id $cleanupUninstall.Id -Force -ErrorAction SilentlyContinue } catch { }
+                    Fail 'Canonical update-mode cleanup uninstaller exceeded its bounded 120-second timeout.'
+                }
+                if ($cleanupUninstall.ExitCode -ne 0) {
+                    Fail "Canonical update-mode cleanup uninstaller exited with code $($cleanupUninstall.ExitCode)."
+                }
+            }
+            if (Test-Path -LiteralPath $canonicalInstallRoot) {
+                Remove-Item -LiteralPath $canonicalInstallRoot -Recurse -Force -ErrorAction Stop
+            }
+        }
+    }
+}
+
 function Invoke-PinnedInference([string]$ExecutablePath) {
     New-Item -ItemType Directory -Force -Path $downloadRoot | Out-Null
     Invoke-WebRequest -Uri $modelUrl -OutFile $modelPath
@@ -843,7 +1027,8 @@ function Invoke-InstallerSmoke([string]$InstallerPath, [string]$ExpectedVersion,
         if ($uninstall.ExitCode -ne 0) { Fail "Silent uninstaller exited with code $($uninstall.ExitCode)." }
         if (Test-Path -LiteralPath $installRoot) { Fail 'Uninstall left installation files behind.' }
         if ($null -ne (Get-RegistryRunValue $runKeyPath $runValueName)) { Fail 'Startup-task uninstall left the startup value behind.' }
-        Write-Host "Native $ExpectedArchitecture silent default-install/owned-startup/unrelated-value/startup-task/self-test/uninstall smoke passed for $ExpectedVersion."
+        Invoke-UpdateModeSmoke $InstallerPath $ExpectedVersion $ExpectedArchitecture
+        Write-Host "Native $ExpectedArchitecture silent default-install/owned-startup/unrelated-value/startup-task/self-test/update-mode/uninstall smoke passed for $ExpectedVersion."
     } finally {
         if (Test-Path -LiteralPath $installRoot) { Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue }
         Restore-RegistryRunValueState $runKeyPath $runValueName $originalRunState
