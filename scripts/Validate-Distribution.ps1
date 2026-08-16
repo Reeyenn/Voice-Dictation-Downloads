@@ -53,6 +53,14 @@ $vcRedistPins = @{
         ProductName = 'Microsoft Visual C++ 2015-2022 Redistributable (x64) - 14.44.35211'
         OriginalFilename = 'VC_redist.x64.exe'
     }
+    '0.7.1' = [pscustomobject]@{
+        Sha256 = 'cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b'
+        Size = 25635768L
+        ProductVersion = '14.44.35211.0'
+        FileVersion = '14.44.35211.0'
+        ProductName = 'Microsoft Visual C++ 2015-2022 Redistributable (x64) - 14.44.35211'
+        OriginalFilename = 'VC_redist.x64.exe'
+    }
 }
 
 function Fail([string]$Message) {

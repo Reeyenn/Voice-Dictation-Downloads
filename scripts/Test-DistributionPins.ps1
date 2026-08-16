@@ -19,6 +19,7 @@ function Assert-NotContains([string]$Text, [string]$Needle, [string]$Label) {
 $workflow = Get-Content -LiteralPath (Join-Path $repoRoot '.github\workflows\windows-distribution.yml') -Raw
 $validator = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\Validate-Distribution.ps1') -Raw
 $installer = Get-Content -LiteralPath (Join-Path $repoRoot 'installer\VoiceDictation.iss') -Raw
+$readme = Get-Content -LiteralPath (Join-Path $repoRoot 'README.md') -Raw
 
 $vcPin = 'cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b'
 Assert-Contains $workflow 'actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683' 'Public workflow'
@@ -31,6 +32,10 @@ Assert-Contains $workflow '10619024' 'Public workflow'
 Assert-Contains $workflow 'Pyrsys B.V.' 'Public workflow'
 Assert-Contains $workflow 'GITHUB_PATH' 'Public workflow'
 Assert-Contains $workflow 'VOICE_DICTATION_UIA_FIXTURE' 'Public workflow'
+Assert-Contains $workflow 'for example 0.7.1' 'Public workflow'
+Assert-Contains $workflow 'default: bootstrap-v0.7.1' 'Public workflow'
+Assert-NotContains $workflow 'for example 0.7.0' 'Public workflow'
+Assert-NotContains $workflow 'default: bootstrap-v0.7.0' 'Public workflow'
 Assert-NotContains $workflow 'choco install' 'Public workflow'
 Assert-NotContains $workflow 'artifacts/**' 'Public workflow'
 Assert-Contains $workflow 'artifacts/Voice-Dictation-Windows-x64-${{ inputs.version }}-Setup.exe' 'Public workflow'
@@ -38,6 +43,28 @@ Assert-Contains $workflow 'artifacts/Voice-Dictation-Windows-x64-${{ inputs.vers
 Assert-Contains $workflow 'artifacts/SHA256SUMS.json' 'Public workflow'
 Assert-Contains $workflow 'artifacts/SHA256SUMS.txt' 'Public workflow'
 Assert-Contains $validator $vcPin 'Distribution validator'
+Assert-Contains $validator "'0.7.0' = [pscustomobject]@{" 'Distribution validator'
+Assert-Contains $validator "'0.7.1' = [pscustomobject]@{" 'Distribution validator'
+if ([regex]::Matches($validator, "'0\.7\.[01]' = \[pscustomobject\]@").Count -ne 2) {
+    throw 'Distribution validator must contain exactly the reviewed 0.7.0 and 0.7.1 VC++ pins.'
+}
+$expectedVcFields = @(
+    "Sha256 = '$vcPin'"
+    "Size = 25635768L"
+    "ProductVersion = '14.44.35211.0'"
+    "FileVersion = '14.44.35211.0'"
+    "ProductName = 'Microsoft Visual C++ 2015-2022 Redistributable (x64) - 14.44.35211'"
+    "OriginalFilename = 'VC_redist.x64.exe'"
+)
+foreach ($field in $expectedVcFields) {
+    if ([regex]::Matches($validator, [regex]::Escape($field)).Count -ne 2) {
+        throw "The 0.7.0 and 0.7.1 VC++ pins must contain the identical reviewed field twice: $field"
+    }
+}
+Assert-Contains $installer '#define APP_VERSION "0.7.1"' 'Public installer'
+Assert-NotContains $installer '#define APP_VERSION "0.7.0"' 'Public installer'
+Assert-Contains $readme 'The 0.7.1 bootstrap pins' 'Distribution README'
+Assert-NotContains $readme 'The 0.7.0 bootstrap pins' 'Distribution README'
 Assert-Contains $validator '25635768L' 'Distribution validator'
 Assert-Contains $validator 'VCREDIST-PROVENANCE.txt' 'Distribution validator'
 Assert-Contains $validator 'unrelated startup value' 'Distribution validator'

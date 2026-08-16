@@ -1,7 +1,7 @@
 #define AppName "Voice Dictation"
 #define AppPublisher "Reeyen"
 #ifndef APP_VERSION
-  #define APP_VERSION "0.7.0"
+  #define APP_VERSION "0.7.1"
 #endif
 #define AppVersion APP_VERSION
 
