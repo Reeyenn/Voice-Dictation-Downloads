@@ -8,6 +8,12 @@ param(
     [string]$PlatformTestsAssetName,
     [string]$PlatformTestsZipPath,
     [bool]$RunPlatformTests = $true,
+    [ValidateSet('Package', 'Native')][string]$Mode = 'Package',
+    [ValidateSet('x64', 'arm64')][string]$Architecture = 'x64',
+    [string]$Arm64PortableSha256,
+    [string]$Arm64PortableAssetName,
+    [string]$Arm64PortableZipPath,
+    [string]$CandidateRoot,
     [string]$Repository,
     [string]$ReleaseTag,
     [string]$OutputRoot = "$PSScriptRoot\..\artifacts",
@@ -26,7 +32,8 @@ $canonicalOutput = [System.IO.Path]::GetFullPath((Join-Path $repoRoot "artifacts
 $artifactMarkerName = ".voice-dictation-artifact-root"
 $artifactMarkerContent = "Voice Dictation public generated artifact root v1"
 $downloadRoot = Join-Path $env:TEMP "voice-dictation-bootstrap-$([Guid]::NewGuid().ToString('N'))"
-$portableStage = Join-Path $downloadRoot "portable"
+$portableStage = Join-Path $downloadRoot "portable-x64"
+$arm64PortableStage = Join-Path $downloadRoot "portable-arm64"
 $testsStage = Join-Path $downloadRoot "platform-tests"
 $testResultsRoot = Join-Path $downloadRoot "test-results"
 $installRoot = Join-Path $env:TEMP "voice-dictation-install-$([Guid]::NewGuid().ToString('N'))"
@@ -55,6 +62,14 @@ $vcRedistPins = @{
         OriginalFilename = 'VC_redist.x64.exe'
     }
     '0.7.1' = [pscustomobject]@{
+        Sha256 = 'cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b'
+        Size = 25635768L
+        ProductVersion = '14.44.35211.0'
+        FileVersion = '14.44.35211.0'
+        ProductName = 'Microsoft Visual C++ 2015-2022 Redistributable (x64) - 14.44.35211'
+        OriginalFilename = 'VC_redist.x64.exe'
+    }
+    '0.8.0' = [pscustomobject]@{
         Sha256 = 'cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b'
         Size = 25635768L
         ProductVersion = '14.44.35211.0'
@@ -139,7 +154,7 @@ function Assert-ExecutableVersion([string]$Path, [string]$ExpectedVersion, [stri
     }
 }
 
-function Assert-PeAmd64([string]$Path, [string]$Label) {
+function Assert-PeArchitecture([string]$Path, [ValidateSet('x64', 'arm64')][string]$ExpectedArchitecture, [string]$Label) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         Fail "$Label is missing: $Path"
     }
@@ -164,8 +179,10 @@ function Assert-PeAmd64([string]$Path, [string]$Label) {
             Fail "$Label is missing the PE signature."
         }
         $machine = $reader.ReadUInt16()
-        if ($machine -ne 0x8664) {
-            Fail "$Label has PE machine 0x$('{0:X4}' -f $machine); expected AMD64 0x8664."
+        $expectedMachine = if ($ExpectedArchitecture -eq 'arm64') { [uint16]0xAA64 } else { [uint16]0x8664 }
+        $expectedLabel = if ($ExpectedArchitecture -eq 'arm64') { 'ARM64 0xAA64' } else { 'AMD64 0x8664' }
+        if ($machine -ne $expectedMachine) {
+            Fail "$Label has PE machine 0x$('{0:X4}' -f $machine); expected $expectedLabel."
         }
     } catch {
         Fail "$Label PE header could not be validated: $($_.Exception.Message)"
@@ -173,6 +190,26 @@ function Assert-PeAmd64([string]$Path, [string]$Label) {
         if ($null -ne $reader) { $reader.Dispose() }
         elseif ($null -ne $stream) { $stream.Dispose() }
     }
+}
+
+function Assert-NativeHost([ValidateSet('x64', 'arm64')][string]$ExpectedArchitecture) {
+    if ([System.Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
+        Fail 'Native validation requires Windows.'
+    }
+    $expected = if ($ExpectedArchitecture -eq 'arm64') {
+        [System.Runtime.InteropServices.Architecture]::Arm64
+    } else {
+        [System.Runtime.InteropServices.Architecture]::X64
+    }
+    $osArchitecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+    $processArchitecture = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture
+    if ($osArchitecture -ne $expected -or $processArchitecture -ne $expected) {
+        Fail "Native $ExpectedArchitecture evidence requires both OS and validator process architecture $expected; found OS=$osArchitecture Process=$processArchitecture."
+    }
+    if ([System.Environment]::OSVersion.Version.Build -lt 22621) {
+        Fail "Windows build $([System.Environment]::OSVersion.Version.Build) is below the supported 22621 baseline."
+    }
+    Write-Host "Native host passed: architecture=$expected build=$([System.Environment]::OSVersion.Version.Build)."
 }
 
 function Get-VcRedistPin([string]$ExpectedVersion) {
@@ -397,7 +434,13 @@ function Download-ReleaseAsset(
     return $Destination
 }
 
-function Assert-PortableArchive([string]$Path, [string]$ExpectedVersion, [pscustomobject]$VcRedistPin) {
+function Assert-PortableArchive(
+    [string]$Path,
+    [string]$ExpectedVersion,
+    [pscustomobject]$VcRedistPin,
+    [ValidateSet('x64', 'arm64')][string]$ExpectedArchitecture,
+    [string]$ExtractionRoot
+) {
     $entries = @(Get-ZipEntries $Path | Where-Object { -not $_.IsDirectory })
     $required = @(
         'VoiceDictation.exe',
@@ -405,7 +448,8 @@ function Assert-PortableArchive([string]$Path, [string]$ExpectedVersion, [pscust
         'VCREDIST-PROVENANCE.txt',
         'README.txt',
         'THIRD_PARTY_NOTICES.md',
-        'DOTNET_THIRD_PARTY_NOTICES.txt'
+        'DOTNET_THIRD_PARTY_NOTICES.txt',
+        'portable.flag'
     )
     foreach ($name in $required) {
         if (-not (@($entries | Where-Object { $_.Name -ceq $name }).Count -eq 1)) {
@@ -425,10 +469,14 @@ function Assert-PortableArchive([string]$Path, [string]$ExpectedVersion, [pscust
     }
 
     $expectedWhisperNames = @('ggml-base-whisper.dll', 'ggml-cpu-whisper.dll', 'ggml-whisper.dll', 'whisper.dll')
-    $expectedRuntime = @(
-        $expectedWhisperNames | ForEach-Object { "runtimes/win-x64/$_" }
-        $expectedWhisperNames | ForEach-Object { "runtimes/noavx/win-x64/$_" }
-    )
+    $expectedRuntime = if ($ExpectedArchitecture -eq 'arm64') {
+        @($expectedWhisperNames | ForEach-Object { "runtimes/win-arm64/$_" })
+    } else {
+        @(
+            $expectedWhisperNames | ForEach-Object { "runtimes/win-x64/$_" }
+            $expectedWhisperNames | ForEach-Object { "runtimes/noavx/win-x64/$_" }
+        )
+    }
     $actualRuntime = @($entries | Where-Object { $_.Name -like 'runtimes/*' } | Select-Object -ExpandProperty Name)
     $missingRuntime = @($expectedRuntime | Where-Object { $_ -cnotin $actualRuntime })
     $unexpectedRuntime = @($actualRuntime | Where-Object { $_ -cnotin $expectedRuntime })
@@ -436,11 +484,16 @@ function Assert-PortableArchive([string]$Path, [string]$ExpectedVersion, [pscust
         Fail "Portable ZIP is missing required Whisper runtime DLLs: $($missingRuntime -join ', ')"
     }
     if ($unexpectedRuntime.Count -gt 0 -or $actualRuntime.Count -ne $expectedRuntime.Count) {
-        Fail "Portable ZIP must contain exactly four optimized and four NoAvx Whisper DLLs; unexpected runtime entries: $($unexpectedRuntime -join ', ')"
+        Fail "Portable ZIP must contain exactly its $ExpectedArchitecture native Whisper DLL set; unexpected runtime entries: $($unexpectedRuntime -join ', ')"
     }
-    $unsupportedRuntime = @($entries | Where-Object { $_.Name -match '(?i)^runtimes/(?:win-arm64|win-x86)(?:/|$)' })
+    $unsupportedPattern = if ($ExpectedArchitecture -eq 'arm64') {
+        '(?i)^runtimes/(?:win-x64|noavx|win-x86)(?:/|$)'
+    } else {
+        '(?i)^runtimes/(?:win-arm64|win-x86)(?:/|$)'
+    }
+    $unsupportedRuntime = @($entries | Where-Object { $_.Name -match $unsupportedPattern })
     if ($unsupportedRuntime.Count -gt 0) {
-        Fail "Portable ZIP must not contain win-arm64 or win-x86 runtimes."
+        Fail "Portable ZIP contains a runtime outside the $ExpectedArchitecture contract."
     }
 
     $badReleaseFiles = @($entries | Where-Object {
@@ -461,10 +514,10 @@ function Assert-PortableArchive([string]$Path, [string]$ExpectedVersion, [pscust
         Fail "Portable ZIP must contain only VoiceDictation.exe and vc_redist.x64.exe as executables."
     }
 
-    New-Item -ItemType Directory -Force -Path $portableStage | Out-Null
-    Expand-Archive -LiteralPath $Path -DestinationPath $portableStage -Force
-    $exe = Join-Path $portableStage 'VoiceDictation.exe'
-    $runtime = Join-Path $portableStage 'vc_redist.x64.exe'
+    New-Item -ItemType Directory -Force -Path $ExtractionRoot | Out-Null
+    Expand-Archive -LiteralPath $Path -DestinationPath $ExtractionRoot -Force
+    $exe = Join-Path $ExtractionRoot 'VoiceDictation.exe'
+    $runtime = Join-Path $ExtractionRoot 'vc_redist.x64.exe'
     Assert-FileSha256 $runtime $VcRedistPin.Sha256 'Bundled VC++ redist'
     if ((Get-Item -LiteralPath $runtime).Length -ne $VcRedistPin.Size) {
         Fail "Bundled VC++ redist size does not match the reviewed pin ($($VcRedistPin.Size) bytes)."
@@ -496,17 +549,17 @@ function Assert-PortableArchive([string]$Path, [string]$ExpectedVersion, [pscust
             Fail "vc_redist.x64.exe $($metadata.Name) '$($metadata.Actual)' does not exactly match expected '$($metadata.Expected)'."
         }
     }
-    Assert-VcRedistEvidence (Join-Path $portableStage 'VCREDIST-PROVENANCE.txt') $VcRedistPin 'Portable VC++ provenance'
+    Assert-VcRedistEvidence (Join-Path $ExtractionRoot 'VCREDIST-PROVENANCE.txt') $VcRedistPin 'Portable VC++ provenance'
     Assert-ExecutableVersion $exe $ExpectedVersion 'Portable VoiceDictation.exe'
-    Assert-PeAmd64 $exe 'Portable VoiceDictation.exe'
+    Assert-PeArchitecture $exe $ExpectedArchitecture 'Portable VoiceDictation.exe'
     foreach ($relative in $expectedRuntime) {
-        $runtimeDll = Join-Path $portableStage ($relative.Replace('/', '\'))
-        Assert-PeAmd64 $runtimeDll "Portable Whisper runtime $relative"
+        $runtimeDll = Join-Path $ExtractionRoot ($relative.Replace('/', '\'))
+        Assert-PeArchitecture $runtimeDll $ExpectedArchitecture "Portable Whisper runtime $relative"
     }
     # vc_redist.x64.exe is intentionally not checked here: Microsoft's
     # bootstrap is a signed PE32 (i386) installer, while the app and Whisper
     # native payload are the x64 components this validator claims to ship.
-    Write-Host "Portable archive structure, notices, Whisper runtimes, executable set, and VC++ signature passed."
+    Write-Host "$ExpectedArchitecture portable structure, notices, native Whisper runtimes, executable set, and VC++ signature passed."
     return $exe
 }
 
@@ -560,10 +613,10 @@ function Assert-PlatformTestsResults([string]$ResultsDirectory, [int]$MinimumTes
     Write-Host "Platform.Tests TRX passed: total=$total executed=$executed passed=$passed failed=$failed notExecuted=$notExecuted."
 }
 
-function Assert-PlatformTestsArchive([string]$Path) {
+function Assert-PlatformTestsArchive([string]$Path, [ValidateSet('x64', 'arm64')][string]$ExpectedArchitecture) {
     $entries = @(Get-ZipEntries $Path | Where-Object { -not $_.IsDirectory })
     $badFiles = @($entries | Where-Object {
-        $_.Name -match '(?i)\.(?:pdb|cs|csproj|sln|props|targets)$'
+        $_.Name -match '(?i)\.(?:pdb|xml|cs|csproj|sln|props|targets)$'
     })
     if ($badFiles.Count -gt 0) {
         Fail "Platform.Tests ZIP contains source/debug build material: $($badFiles.Name -join ', ')"
@@ -571,6 +624,24 @@ function Assert-PlatformTestsArchive([string]$Path) {
     $testDlls = @($entries | Where-Object { [System.IO.Path]::GetFileName($_.Name) -ceq 'VoiceDictation.Platform.Tests.dll' })
     if ($testDlls.Count -ne 1) {
         Fail "Platform.Tests ZIP must contain exactly one VoiceDictation.Platform.Tests.dll."
+    }
+    foreach ($requiredName in @('VoiceDictation.Platform.Tests.deps.json', 'VoiceDictation.Platform.Tests.runtimeconfig.json', 'testhost.dll')) {
+        if (@($entries | Where-Object { [System.IO.Path]::GetFileName($_.Name) -ceq $requiredName }).Count -ne 1) {
+            Fail "Platform.Tests ZIP must contain exactly one $requiredName."
+        }
+    }
+    $expectedWhisperNames = @('ggml-base-whisper.dll', 'ggml-cpu-whisper.dll', 'ggml-whisper.dll', 'whisper.dll')
+    $expectedRuntime = if ($ExpectedArchitecture -eq 'arm64') {
+        @($expectedWhisperNames | ForEach-Object { "runtimes/win-arm64/$_" })
+    } else {
+        @(
+            $expectedWhisperNames | ForEach-Object { "runtimes/win-x64/$_" }
+            $expectedWhisperNames | ForEach-Object { "runtimes/noavx/win-x64/$_" }
+        )
+    }
+    $actualRuntime = @($entries | Where-Object { $_.Name -like 'runtimes/*' } | Select-Object -ExpandProperty Name)
+    if (@(Compare-Object -ReferenceObject ($expectedRuntime | Sort-Object) -DifferenceObject ($actualRuntime | Sort-Object)).Count -ne 0) {
+        Fail "Platform.Tests ZIP must contain exactly the $ExpectedArchitecture native Whisper runtime set."
     }
     New-Item -ItemType Directory -Force -Path $testsStage | Out-Null
     if (Test-Path -LiteralPath $testResultsRoot) {
@@ -583,9 +654,15 @@ function Assert-PlatformTestsArchive([string]$Path) {
         $dll = Get-ChildItem -LiteralPath $testsStage -Filter 'VoiceDictation.Platform.Tests.dll' -File -Recurse | Select-Object -First 1 -ExpandProperty FullName
     }
     if (-not $dll) { Fail "Extracted Platform.Tests ZIP did not contain its test assembly." }
+    $testApp = Get-ChildItem -LiteralPath $testsStage -Filter 'VoiceDictation.exe' -File -Recurse | Select-Object -First 1 -ExpandProperty FullName
+    if (-not $testApp) { Fail 'Platform.Tests ZIP did not contain VoiceDictation.exe for architecture verification.' }
+    Assert-PeArchitecture $testApp $ExpectedArchitecture 'Platform.Tests VoiceDictation.exe'
+    foreach ($relative in $expectedRuntime) {
+        Assert-PeArchitecture (Join-Path $testsStage ($relative.Replace('/', '\'))) $ExpectedArchitecture "Platform.Tests runtime $relative"
+    }
     $dotnet = Get-Command dotnet.exe -ErrorAction SilentlyContinue
     if ($null -eq $dotnet) { Fail "dotnet.exe is required to run Platform.Tests." }
-    Write-Host "Running precompiled Platform.Tests with dotnet vstest."
+    Write-Host "Running native $ExpectedArchitecture precompiled Platform.Tests with dotnet vstest."
     Clear-WorkflowTokens
     $previousUiaFixture = [Environment]::GetEnvironmentVariable('VOICE_DICTATION_UIA_FIXTURE', 'Process')
     $testExitCode = 0
@@ -669,7 +746,7 @@ function Invoke-PinnedInference([string]$ExecutablePath) {
     Write-Host 'Pinned Whisper model, JFK phrase, and silence inference passed.'
 }
 
-function Invoke-InstallerSmoke([string]$InstallerPath, [string]$ExpectedVersion) {
+function Invoke-InstallerSmoke([string]$InstallerPath, [string]$ExpectedVersion, [ValidateSet('x64', 'arm64')][string]$ExpectedArchitecture) {
     if ([System.Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
         Fail 'Installer smoke tests require Windows.'
     }
@@ -692,27 +769,30 @@ function Invoke-InstallerSmoke([string]$InstallerPath, [string]$ExpectedVersion)
         $installedExe = Join-Path $installRoot 'VoiceDictation.exe'
         if (-not (Test-Path -LiteralPath $installedExe -PathType Leaf)) { Fail 'Installer did not place VoiceDictation.exe.' }
         Assert-ExecutableVersion $installedExe $ExpectedVersion 'Installed VoiceDictation.exe'
+        Assert-PeArchitecture $installedExe $ExpectedArchitecture 'Installed VoiceDictation.exe'
         if ($null -ne (Get-RegistryRunValue $runKeyPath $runValueName)) { Fail 'Default install unexpectedly created the HKCU startup value.' }
         Assert-VcRedistEvidence (Join-Path $installRoot 'VCREDIST-PROVENANCE.txt') $vcRedistPin 'Installed VC++ provenance'
         if (-not (Test-Path -LiteralPath (Join-Path $installRoot 'README.txt') -PathType Leaf)) { Fail 'Installer did not place README.txt.' }
-        $expectedRuntimeRelative = @(
-            'runtimes\win-x64\ggml-base-whisper.dll',
-            'runtimes\win-x64\ggml-cpu-whisper.dll',
-            'runtimes\win-x64\ggml-whisper.dll',
-            'runtimes\win-x64\whisper.dll',
-            'runtimes\noavx\win-x64\ggml-base-whisper.dll',
-            'runtimes\noavx\win-x64\ggml-cpu-whisper.dll',
-            'runtimes\noavx\win-x64\ggml-whisper.dll',
-            'runtimes\noavx\win-x64\whisper.dll'
-        )
+        $whisperNames = @('ggml-base-whisper.dll', 'ggml-cpu-whisper.dll', 'ggml-whisper.dll', 'whisper.dll')
+        $expectedRuntimeRelative = if ($ExpectedArchitecture -eq 'arm64') {
+            @($whisperNames | ForEach-Object { "runtimes\win-arm64\$_" })
+        } else {
+            @(
+                $whisperNames | ForEach-Object { "runtimes\win-x64\$_" }
+                $whisperNames | ForEach-Object { "runtimes\noavx\win-x64\$_" }
+            )
+        }
         foreach ($relative in $expectedRuntimeRelative) {
-            if (-not (Test-Path -LiteralPath (Join-Path $installRoot $relative) -PathType Leaf)) {
+            $installedRuntime = Join-Path $installRoot $relative
+            if (-not (Test-Path -LiteralPath $installedRuntime -PathType Leaf)) {
                 Fail "Installer did not recursively install required Whisper runtime '$relative'."
             }
+            Assert-PeArchitecture $installedRuntime $ExpectedArchitecture "Installed Whisper runtime $relative"
         }
-        $unsupportedInstalledRuntime = Get-ChildItem -LiteralPath (Join-Path $installRoot 'runtimes') -File -Recurse -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -match '(?i)\\(?:win-arm64|win-x86)\\' }
-        if ($unsupportedInstalledRuntime) { Fail 'Installer installed an unsupported ARM64 or x86 runtime.' }
+        $allInstalledRuntime = @(Get-ChildItem -LiteralPath (Join-Path $installRoot 'runtimes') -File -Recurse -ErrorAction SilentlyContinue)
+        if ($allInstalledRuntime.Count -ne $expectedRuntimeRelative.Count) {
+            Fail "Installer placed $($allInstalledRuntime.Count) native runtime files; expected exactly $($expectedRuntimeRelative.Count) for $ExpectedArchitecture."
+        }
         $expectedRunValue = "`"$installedExe`" --background"
         Set-RegistryRunValue $runKeyPath $runValueName $expectedRunValue
         $uninstaller = Join-Path $installRoot 'unins000.exe'
@@ -755,7 +835,7 @@ function Invoke-InstallerSmoke([string]$InstallerPath, [string]$ExpectedVersion)
         if ($uninstall.ExitCode -ne 0) { Fail "Silent uninstaller exited with code $($uninstall.ExitCode)." }
         if (Test-Path -LiteralPath $installRoot) { Fail 'Uninstall left installation files behind.' }
         if ($null -ne (Get-RegistryRunValue $runKeyPath $runValueName)) { Fail 'Startup-task uninstall left the startup value behind.' }
-        Write-Host "Silent default-install/owned-startup/unrelated-value/startup-task/self-test/uninstall smoke passed for $ExpectedVersion."
+        Write-Host "Native $ExpectedArchitecture silent default-install/owned-startup/unrelated-value/startup-task/self-test/uninstall smoke passed for $ExpectedVersion."
     } finally {
         if (Test-Path -LiteralPath $installRoot) { Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue }
         Restore-RegistryRunValueState $runKeyPath $runValueName $originalRunState
@@ -768,10 +848,54 @@ function Invoke-InstallerSmoke([string]$InstallerPath, [string]$ExpectedVersion)
     }
 }
 
+function Get-ValidatedCandidateArtifacts([string]$Root, [string]$ExpectedVersion) {
+    $resolvedRoot = (Resolve-Path -LiteralPath $Root).Path
+    $manifestMatches = @(Get-ChildItem -LiteralPath $resolvedRoot -Filter 'SHA256SUMS.json' -File -Recurse)
+    $textMatches = @(Get-ChildItem -LiteralPath $resolvedRoot -Filter 'SHA256SUMS.txt' -File -Recurse)
+    if ($manifestMatches.Count -ne 1 -or $textMatches.Count -ne 1) {
+        Fail 'Candidate must contain exactly one SHA256SUMS.json and one SHA256SUMS.txt.'
+    }
+    try {
+        $manifest = @(Get-Content -LiteralPath $manifestMatches[0].FullName -Raw | ConvertFrom-Json)
+    } catch {
+        Fail "Candidate SHA256SUMS.json is invalid: $($_.Exception.Message)"
+    }
+    $expected = [ordered]@{
+        "Voice-Dictation-Windows-$ExpectedVersion-Setup.exe" = 'windows-universal'
+        "Voice-Dictation-Windows-x64-$ExpectedVersion-Portable.zip" = 'windows-x64'
+        "Voice-Dictation-Windows-arm64-$ExpectedVersion-Portable.zip" = 'windows-arm64'
+    }
+    if ($manifest.Count -ne $expected.Count) {
+        Fail "Candidate manifest contains $($manifest.Count) entries; expected exactly $($expected.Count)."
+    }
+    $files = @{}
+    foreach ($expectedName in $expected.Keys) {
+        $entry = @($manifest | Where-Object { [string]$_.name -ceq $expectedName })
+        if ($entry.Count -ne 1) { Fail "Candidate manifest must contain exactly one '$expectedName' entry." }
+        if ([string]$entry[0].version -cne $ExpectedVersion -or [string]$entry[0].platform -cne $expected[$expectedName]) {
+            Fail "Candidate manifest metadata is invalid for '$expectedName'."
+        }
+        $matches = @(Get-ChildItem -LiteralPath $resolvedRoot -Filter $expectedName -File -Recurse)
+        if ($matches.Count -ne 1) { Fail "Candidate must contain exactly one '$expectedName' file." }
+        $file = $matches[0]
+        if ([int64]$entry[0].size -ne $file.Length) { Fail "Candidate size mismatch for '$expectedName'." }
+        $expectedHash = Assert-Sha256 ([string]$entry[0].sha256) "Candidate $expectedName SHA-256"
+        Assert-FileSha256 $file.FullName $expectedHash "Candidate $expectedName"
+        $files[$expectedName] = $file.FullName
+    }
+    $expectedLines = @($manifest | ForEach-Object { "$([string]$_.sha256)  $([string]$_.name)" })
+    $actualLines = @(Get-Content -LiteralPath $textMatches[0].FullName | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if (@(Compare-Object -CaseSensitive -ReferenceObject ($expectedLines | Sort-Object) -DifferenceObject ($actualLines | Sort-Object)).Count -ne 0) {
+        Fail 'Candidate SHA256SUMS.txt does not exactly match SHA256SUMS.json.'
+    }
+    return $files
+}
+
 Assert-Version $Version
 $vcRedistPin = Get-VcRedistPin $Version
 $PortableSha256 = Assert-Sha256 $PortableSha256 'Portable ZIP SHA-256'
 $PlatformTestsSha256 = if ([string]::IsNullOrWhiteSpace($PlatformTestsSha256)) { '' } else { Assert-Sha256 $PlatformTestsSha256 'Platform.Tests ZIP SHA-256' }
+$Arm64PortableSha256 = if ([string]::IsNullOrWhiteSpace($Arm64PortableSha256)) { '' } else { Assert-Sha256 $Arm64PortableSha256 'ARM64 portable ZIP SHA-256' }
 if ($RunPlatformTests -and ([string]::IsNullOrWhiteSpace($PlatformTestsSha256) -or [string]::IsNullOrWhiteSpace($PlatformTestsAssetName) -and [string]::IsNullOrWhiteSpace($PlatformTestsZipPath))) {
     Fail 'Platform.Tests validation is enabled by default; provide its asset name/path and SHA-256, or explicitly set RunPlatformTests to false for a bootstrap-only check.'
 }
@@ -779,26 +903,60 @@ if (-not $RunPlatformTests -and (-not [string]::IsNullOrWhiteSpace($PlatformTest
     Fail 'Platform.Tests asset inputs must be omitted when RunPlatformTests is false; no compiled test archive will be trusted or silently ignored.'
 }
 if (-not [string]::IsNullOrWhiteSpace($PortableAssetName)) { Assert-AssetName $PortableAssetName 'Portable' $Version }
-if (-not [string]::IsNullOrWhiteSpace($PortableAssetName) -and $PortableAssetName -cnotmatch "^Voice-Dictation-Windows-x64-$([System.Text.RegularExpressions.Regex]::Escape($Version))-Portable\.zip$") {
-    Fail "Portable asset must use the versioned Voice-Dictation-Windows-x64-<version>-Portable.zip name."
+$expectedPrimaryArchitecture = if ($Mode -eq 'Package') { 'x64' } else { $Architecture }
+$expectedPrimaryPortableName = "Voice-Dictation-Windows-$expectedPrimaryArchitecture-$Version-Portable.zip"
+if (-not [string]::IsNullOrWhiteSpace($PortableAssetName) -and $PortableAssetName -cne $expectedPrimaryPortableName) {
+    Fail "Portable asset must be exactly '$expectedPrimaryPortableName'."
 }
 if (-not [string]::IsNullOrWhiteSpace($PlatformTestsAssetName)) {
     Assert-AssetName $PlatformTestsAssetName 'Platform.Tests' $Version
-    if ($PlatformTestsAssetName -cnotmatch "^Voice-Dictation-Windows-x64-$([System.Text.RegularExpressions.Regex]::Escape($Version))-Platform\.Tests\.zip$") {
-        Fail "Platform.Tests asset must use the versioned Voice-Dictation-Windows-x64-<version>-Platform.Tests.zip name."
+    $expectedTestsName = "Voice-Dictation-Windows-$expectedPrimaryArchitecture-$Version-Platform.Tests.zip"
+    if ($PlatformTestsAssetName -cne $expectedTestsName) {
+        Fail "Platform.Tests asset must be exactly '$expectedTestsName'."
     }
+}
+if ($Mode -eq 'Package') {
+    if ($Architecture -ne 'x64') { Fail 'Package mode must run on the native x64 packaging host.' }
+    if ([string]::IsNullOrWhiteSpace($Arm64PortableSha256) -or
+        ([string]::IsNullOrWhiteSpace($Arm64PortableAssetName) -and [string]::IsNullOrWhiteSpace($Arm64PortableZipPath))) {
+        Fail 'Package mode requires the exact ARM64 portable asset/path and SHA-256.'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Arm64PortableAssetName)) {
+        Assert-AssetName $Arm64PortableAssetName 'ARM64 portable' $Version
+        if ($Arm64PortableAssetName -cne "Voice-Dictation-Windows-arm64-$Version-Portable.zip") {
+            Fail 'ARM64 portable asset must use the exact versioned v0.8 name.'
+        }
+    }
+} elseif ([string]::IsNullOrWhiteSpace($CandidateRoot)) {
+    Fail 'Native mode requires CandidateRoot containing the exact universal setup, both portables, and manifests.'
 }
 
 try {
     New-Item -ItemType Directory -Force -Path $downloadRoot | Out-Null
-    if ([string]::IsNullOrWhiteSpace($PortableZipPath)) {
-        if ([string]::IsNullOrWhiteSpace($PortableAssetName)) { $PortableAssetName = "Voice-Dictation-Windows-x64-$Version-Portable.zip" }
+    Assert-NativeHost $Architecture
+
+    if ($Mode -eq 'Native') {
+        $candidate = Get-ValidatedCandidateArtifacts $CandidateRoot $Version
+        $PortableAssetName = $expectedPrimaryPortableName
+        $PortableZipPath = $candidate[$PortableAssetName]
+    } elseif ([string]::IsNullOrWhiteSpace($PortableZipPath)) {
+        if ([string]::IsNullOrWhiteSpace($PortableAssetName)) { $PortableAssetName = $expectedPrimaryPortableName }
         $PortableZipPath = Download-ReleaseAsset $PortableAssetName $Version $Repository $(if ($ReleaseTag) { $ReleaseTag } else { "bootstrap-v$Version" }) $GitHubToken (Join-Path $downloadRoot $PortableAssetName)
     } else {
         $PortableZipPath = (Resolve-Path -LiteralPath $PortableZipPath).Path
     }
     Assert-FileSha256 $PortableZipPath $PortableSha256 'Portable ZIP'
-    $portableExe = Assert-PortableArchive $PortableZipPath $Version $vcRedistPin
+    $portableExe = Assert-PortableArchive $PortableZipPath $Version $vcRedistPin $expectedPrimaryArchitecture $portableStage
+
+    if ($Mode -eq 'Package') {
+        if ([string]::IsNullOrWhiteSpace($Arm64PortableZipPath)) {
+            $Arm64PortableZipPath = Download-ReleaseAsset $Arm64PortableAssetName $Version $Repository $(if ($ReleaseTag) { $ReleaseTag } else { "bootstrap-v$Version" }) $GitHubToken (Join-Path $downloadRoot $Arm64PortableAssetName)
+        } else {
+            $Arm64PortableZipPath = (Resolve-Path -LiteralPath $Arm64PortableZipPath).Path
+        }
+        Assert-FileSha256 $Arm64PortableZipPath $Arm64PortableSha256 'ARM64 portable ZIP'
+        $null = Assert-PortableArchive $Arm64PortableZipPath $Version $vcRedistPin 'arm64' $arm64PortableStage
+    }
 
     if ($RunPlatformTests) {
         if ([string]::IsNullOrWhiteSpace($PlatformTestsZipPath)) {
@@ -815,11 +973,23 @@ try {
     Clear-WorkflowTokens
 
     if ($RunPlatformTests) {
-        Assert-PlatformTestsArchive $PlatformTestsZipPath
+        Assert-PlatformTestsArchive $PlatformTestsZipPath $expectedPrimaryArchitecture
+    }
+
+    if ($Mode -eq 'Native') {
+        $setupName = "Voice-Dictation-Windows-$Version-Setup.exe"
+        $setupPath = $candidate[$setupName]
+        Invoke-InstallerSmoke $setupPath $Version $Architecture
+        Invoke-PinnedInference $portableExe
+        Write-Host "Native $Architecture validation passed for the exact universal candidate."
+        return
     }
 
     Clear-OutputRoot $output
-    $publishDir = Join-Path $repoRoot 'publish\win-x64'
+    $publishDirs = [ordered]@{
+        'x64' = Join-Path $repoRoot 'publish\win-x64'
+        'arm64' = Join-Path $repoRoot 'publish\win-arm64'
+    }
     # The copied Inno script resolves these paths relative to the repository
     # root. Keep its scratch tree fixed, then copy only final artifacts to a
     # caller-selected output directory.
@@ -827,7 +997,8 @@ try {
     $installerArtifacts = Join-Path $innoArtifacts 'installer'
     $vcRedist = Join-Path $innoArtifacts 'vc_redist.x64.exe'
     $vcRedistEvidence = Join-Path $innoArtifacts 'VCREDIST-PROVENANCE.txt'
-    foreach ($path in @($publishDir, $installerArtifacts, $vcRedist, $vcRedistEvidence)) {
+    $stagingPaths = @($publishDirs.Values) + @($installerArtifacts, $vcRedist, $vcRedistEvidence)
+    foreach ($path in $stagingPaths) {
         if (Test-Path -LiteralPath $path) {
             $item = Get-Item -LiteralPath $path
             if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
@@ -836,20 +1007,24 @@ try {
             Remove-Item -LiteralPath $path -Recurse -Force
         }
     }
-    New-Item -ItemType Directory -Force -Path $publishDir, $installerArtifacts | Out-Null
-    Copy-Item -Path (Join-Path $portableStage '*') -Destination $publishDir -Recurse -Force
-    Copy-Item -LiteralPath (Join-Path $publishDir 'vc_redist.x64.exe') -Destination $vcRedist -Force
-    Remove-Item -LiteralPath (Join-Path $publishDir 'vc_redist.x64.exe') -Force
-    Copy-Item -LiteralPath (Join-Path $publishDir 'VCREDIST-PROVENANCE.txt') -Destination $vcRedistEvidence -Force
-    # Inno adds the repository-owned README, VC++ provenance, and notices
-    # explicitly below. Remove the portable copies so the installed package
-    # has one deterministic copy of each payload file.
-    foreach ($noticeName in @('README.txt', 'VCREDIST-PROVENANCE.txt', 'THIRD_PARTY_NOTICES.md', 'DOTNET_THIRD_PARTY_NOTICES.txt')) {
-        $stagedNotice = Join-Path $publishDir $noticeName
-        if (-not (Test-Path -LiteralPath $stagedNotice -PathType Leaf)) {
-            Fail "Portable staging did not contain required notice '$noticeName'."
+    $publishDirectories = @($publishDirs.Values) + @($installerArtifacts)
+    New-Item -ItemType Directory -Force -Path $publishDirectories | Out-Null
+    $portableStages = [ordered]@{ 'x64' = $portableStage; 'arm64' = $arm64PortableStage }
+    foreach ($arch in $portableStages.Keys) {
+        $publishDir = $publishDirs[$arch]
+        Copy-Item -Path (Join-Path $portableStages[$arch] '*') -Destination $publishDir -Recurse -Force
+        if ($arch -eq 'x64') {
+            Copy-Item -LiteralPath (Join-Path $publishDir 'vc_redist.x64.exe') -Destination $vcRedist -Force
+            Copy-Item -LiteralPath (Join-Path $publishDir 'VCREDIST-PROVENANCE.txt') -Destination $vcRedistEvidence -Force
         }
-        Remove-Item -LiteralPath $stagedNotice -Force
+        Remove-Item -LiteralPath (Join-Path $publishDir 'vc_redist.x64.exe') -Force
+        foreach ($noticeName in @('README.txt', 'VCREDIST-PROVENANCE.txt', 'THIRD_PARTY_NOTICES.md', 'DOTNET_THIRD_PARTY_NOTICES.txt', 'portable.flag')) {
+            $stagedNotice = Join-Path $publishDir $noticeName
+            if (-not (Test-Path -LiteralPath $stagedNotice -PathType Leaf)) {
+                Fail "$arch portable staging did not contain required package boundary file '$noticeName'."
+            }
+            Remove-Item -LiteralPath $stagedNotice -Force
+        }
     }
     if (-not (Test-Path -LiteralPath (Join-Path $repoRoot 'release\PORTABLE-README.txt') -PathType Leaf)) {
         Fail 'Repository-owned PORTABLE-README.txt is missing for the installer payload.'
@@ -861,12 +1036,14 @@ try {
     Clear-WorkflowTokens
     & $iscc.Source '/Qp' "/DAPP_VERSION=$Version" $iss
     if ($LASTEXITCODE -ne 0) { Fail "Inno Setup exited with code $LASTEXITCODE." }
-    $expectedSetupName = "Voice-Dictation-Windows-x64-$Version-Setup.exe"
+    $expectedSetupName = "Voice-Dictation-Windows-$Version-Setup.exe"
     $setupMatches = @(Get-ChildItem -LiteralPath $installerArtifacts -Filter $expectedSetupName -File -Recurse)
     if ($setupMatches.Count -ne 1) { Fail 'Inno Setup must produce exactly one expected versioned setup executable.' }
     $setup = $setupMatches[0]
-    $portableOut = Join-Path $output "Voice-Dictation-Windows-x64-$Version-Portable.zip"
-    Copy-Item -LiteralPath $PortableZipPath -Destination $portableOut -Force
+    $x64PortableOut = Join-Path $output "Voice-Dictation-Windows-x64-$Version-Portable.zip"
+    $arm64PortableOut = Join-Path $output "Voice-Dictation-Windows-arm64-$Version-Portable.zip"
+    Copy-Item -LiteralPath $PortableZipPath -Destination $x64PortableOut -Force
+    Copy-Item -LiteralPath $Arm64PortableZipPath -Destination $arm64PortableOut -Force
     $setupOut = Join-Path $output $setup.Name
     Copy-Item -LiteralPath $setup.FullName -Destination $setupOut -Force
 
@@ -884,7 +1061,8 @@ try {
     }
 
     $expectedOutputNames = @(
-        [System.IO.Path]::GetFileName($portableOut)
+        [System.IO.Path]::GetFileName($x64PortableOut)
+        [System.IO.Path]::GetFileName($arm64PortableOut)
         [System.IO.Path]::GetFileName($setupOut)
         'SHA256SUMS.json'
         'SHA256SUMS.txt'
@@ -892,17 +1070,17 @@ try {
     $unexpectedOutput = @(Get-ChildItem -LiteralPath $output -File | Where-Object { $_.Name -notin $expectedOutputNames })
     if ($unexpectedOutput.Count -gt 0) { Fail "OutputRoot contains unexpected release files: $($unexpectedOutput.Name -join ', ')" }
 
-    Invoke-InstallerSmoke $setupOut $Version
+    Invoke-InstallerSmoke $setupOut $Version 'x64'
     Invoke-PinnedInference $portableExe
 
-    $releaseFiles = @($setupOut, $portableOut)
+    $releaseFiles = @($setupOut, $x64PortableOut, $arm64PortableOut)
     $manifest = @($releaseFiles | ForEach-Object {
         $item = Get-Item -LiteralPath $_
         [ordered]@{
             name = $item.Name
             size = $item.Length
             sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $item.FullName).Hash.ToLowerInvariant()
-            platform = 'windows-x64'
+            platform = if ($item.Name -like '*-arm64-*') { 'windows-arm64' } elseif ($item.Name -like '*-x64-*') { 'windows-x64' } else { 'windows-universal' }
             version = $Version
         }
     })
