@@ -101,11 +101,9 @@ jobs:
           if ($process.ExitCode -ne 0) { throw "Inno Setup installer exited with $($process.ExitCode)." }
           $iscc = Join-Path $installDir 'ISCC.exe'
           if (-not (Test-Path -LiteralPath $iscc -PathType Leaf)) { throw 'Pinned Inno Setup install did not produce ISCC.exe.' }
-          $installedFileVersion = [string](Get-Item -LiteralPath $iscc).VersionInfo.FileVersion
-          $normalizedFileVersion = $installedFileVersion.Trim()
-          if ($normalizedFileVersion -cne '6.7.1.0') {
-            throw "Expected Inno Setup ISCC FileVersion 6.7.1.0, found '$installedFileVersion'."
-          }
+          # This compiler intentionally exposes 0.0.0.0 in both PE version
+          # string fields. The actual installer script therefore validates
+          # ISPP's authoritative PREPROCVER value when ISCC compiles it.
           Split-Path -Parent $iscc | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Verify distribution pins and provenance gates
