@@ -178,7 +178,20 @@ var
 
 function ShouldLaunchAfterSetup: Boolean;
 begin
-  Result := IsVoiceUpdateMode or (not WizardSilent);
+  { Update mode launches explicitly from CurStepChanged so success is based
+    on process creation, not merely on reaching the [Run] phase. }
+  Result := (not IsVoiceUpdateMode) and (not WizardSilent);
+end;
+
+function LaunchInstalledApplication: Boolean;
+var
+  ResultCode: Integer;
+  ExistingApp: String;
+begin
+  Result := False;
+  ExistingApp := ExpandConstant('{app}\VoiceDictation.exe');
+  if not FileExists(ExistingApp) then Exit;
+  Result := Exec(ExistingApp, '--background', '', SW_SHOWNORMAL, ewNoWait, ResultCode);
 end;
 
 function VCRedistNeeded: Boolean;
@@ -240,18 +253,19 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  if (CurStep = ssPostInstall) and IsVoiceUpdateMode then
-    UpdateSucceeded := True;
+  if CurStep = ssPostInstall then begin
+    if IsVoiceUpdateMode then
+      UpdateSucceeded := LaunchInstalledApplication;
+  end;
 end;
 
 procedure DeinitializeSetup;
-var
-  ResultCode: Integer;
-  ExistingApp: String;
 begin
   if IsVoiceUpdateMode and (not UpdateSucceeded) then begin
-    ExistingApp := ExpandConstant('{param:UPDATEINSTALLDIR|}') + '\VoiceDictation.exe';
-    if FileExists(ExistingApp) then
-      Exec(ExistingApp, '--background', '', SW_SHOWNORMAL, ewNoWait, ResultCode);
+    { A transient launch failure gets one bounded retry after setup has fully
+      torn down. Never claim success unless Exec created the process. }
+    UpdateSucceeded := LaunchInstalledApplication;
+    if not UpdateSucceeded then
+      MsgBox('Voice Dictation could not be started automatically. Start it from the Start menu.', mbError, MB_OK);
   end;
 end;
