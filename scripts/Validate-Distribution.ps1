@@ -778,6 +778,19 @@ function Stop-VoiceBackgroundProcesses([string]$ExecutablePath, [string]$Label) 
     Fail "$Label process did not exit within the bounded cleanup window."
 }
 
+function Wait-ForInstallRootRemoval([string]$Path, [string]$Label, [int]$TimeoutMilliseconds = 15000) {
+    if ($TimeoutMilliseconds -le 0) {
+        Fail "$Label removal timeout must be positive."
+    }
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    while (Test-Path -LiteralPath $Path) {
+        if ([DateTime]::UtcNow -ge $deadline) {
+            Fail "$Label left its isolated install root present after the bounded $TimeoutMilliseconds ms removal wait: $Path"
+        }
+        Start-Sleep -Milliseconds 250
+    }
+}
+
 function Invoke-UpdateModeSmoke([string]$InstallerPath, [string]$ExpectedVersion, [ValidateSet('x64', 'arm64')][string]$ExpectedArchitecture) {
     $localAppData = [System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::LocalApplicationData)
     if ([string]::IsNullOrWhiteSpace($localAppData)) {
@@ -906,6 +919,7 @@ function Invoke-UpdateModeSmoke([string]$InstallerPath, [string]$ExpectedVersion
                 if ($cleanupUninstall.ExitCode -ne 0) {
                     Fail "Canonical update-mode cleanup uninstaller exited with code $($cleanupUninstall.ExitCode)."
                 }
+                Wait-ForInstallRootRemoval $canonicalInstallRoot 'Update-mode cleanup uninstall'
             }
             if (Test-Path -LiteralPath $canonicalInstallRoot) {
                 Remove-Item -LiteralPath $canonicalInstallRoot -Recurse -Force -ErrorAction Stop
@@ -991,7 +1005,7 @@ function Invoke-InstallerSmoke([string]$InstallerPath, [string]$ExpectedVersion,
         if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) { Fail 'Installer did not place an uninstaller.' }
         $uninstall = Start-Process -FilePath $uninstaller -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
         if ($uninstall.ExitCode -ne 0) { Fail "Silent uninstaller exited with code $($uninstall.ExitCode)." }
-        if (Test-Path -LiteralPath $installRoot) { Fail 'Uninstall left installation files behind.' }
+        Wait-ForInstallRootRemoval $installRoot 'Owned-value uninstall'
         if ($null -ne (Get-RegistryRunValue $runKeyPath $runValueName)) { Fail 'Uninstall did not remove the exact app-owned startup value.' }
 
         # A user/other application value under the same name must survive.
@@ -1004,6 +1018,7 @@ function Invoke-InstallerSmoke([string]$InstallerPath, [string]$ExpectedVersion,
         $uninstaller = Join-Path $installRoot 'unins000.exe'
         $uninstall = Start-Process -FilePath $uninstaller -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
         if ($uninstall.ExitCode -ne 0) { Fail "Unrelated-value uninstaller exited with code $($uninstall.ExitCode)." }
+        Wait-ForInstallRootRemoval $installRoot 'Unrelated-value uninstall'
         $unrelatedState = Get-RegistryRunValueState $runKeyPath $runValueName
         if (-not $unrelatedState.Present -or $unrelatedState.Value -cne $unrelatedRunValue -or $unrelatedState.Kind.ToString() -cne 'ExpandString') { Fail 'Uninstall removed, changed, or retyped an unrelated startup value.' }
         Remove-RegistryRunValue $runKeyPath $runValueName
@@ -1025,7 +1040,7 @@ function Invoke-InstallerSmoke([string]$InstallerPath, [string]$ExpectedVersion,
         if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) { Fail 'Installer did not place an uninstaller.' }
         $uninstall = Start-Process -FilePath $uninstaller -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
         if ($uninstall.ExitCode -ne 0) { Fail "Silent uninstaller exited with code $($uninstall.ExitCode)." }
-        if (Test-Path -LiteralPath $installRoot) { Fail 'Uninstall left installation files behind.' }
+        Wait-ForInstallRootRemoval $installRoot 'Startup-task uninstall'
         if ($null -ne (Get-RegistryRunValue $runKeyPath $runValueName)) { Fail 'Startup-task uninstall left the startup value behind.' }
         Invoke-UpdateModeSmoke $InstallerPath $ExpectedVersion $ExpectedArchitecture
         Write-Host "Native $ExpectedArchitecture silent default-install/owned-startup/unrelated-value/startup-task/self-test/update-mode/uninstall smoke passed for $ExpectedVersion."
