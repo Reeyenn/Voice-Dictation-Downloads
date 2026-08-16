@@ -44,7 +44,9 @@ $sampleSha256 = "59dfb9a4acb36fe2a2affc14bacbee2920ff435cb13cc314a08c13f66ba7860
 $vcRedistPins = @{
     '0.7.0' = [pscustomobject]@{
         Sha256 = 'cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b'
+        Size = 25635768L
         ProductVersion = '14.44.35211.0'
+        FileVersion = '14.44.35211.0'
         ProductName = 'Microsoft Visual C++ 2015-2022 Redistributable (x64) - 14.44.35211'
         OriginalFilename = 'VC_redist.x64.exe'
     }
@@ -161,6 +163,23 @@ function Assert-FileSha256([string]$Path, [string]$Expected, [string]$Label) {
     }
 }
 
+function Assert-VcRedistEvidence([string]$Path, [pscustomobject]$Pin, [string]$Label) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { Fail "$Label is missing." }
+    $provenanceText = Get-Content -LiteralPath $Path -Raw
+    foreach ($line in @(
+        "SHA256: $($Pin.Sha256)"
+        "Size: $($Pin.Size)"
+        "FileVersion: $($Pin.FileVersion)"
+        "ProductVersion: $($Pin.ProductVersion)"
+        "ProductName: $($Pin.ProductName)"
+        'Authenticode: Valid (Microsoft signer)'
+    )) {
+        if ($provenanceText -notlike "*$line*") {
+            Fail "$Label does not record '$line'."
+        }
+    }
+}
+
 function Clear-WorkflowTokens {
     # Release API calls are completed before this function is called. Clearing
     # both conventional variables prevents a downloaded/precompiled child
@@ -182,6 +201,21 @@ function Restore-RegistryRunValue(
     } else {
         Remove-ItemProperty -LiteralPath $RunKeyPath -Name $RunValueName -ErrorAction SilentlyContinue
     }
+}
+
+function Get-RegistryRunValue([string]$RunKeyPath, [string]$RunValueName) {
+    $value = Get-ItemProperty -LiteralPath $RunKeyPath -Name $RunValueName -ErrorAction SilentlyContinue
+    if ($null -eq $value -or $value.PSObject.Properties.Name -notcontains $RunValueName) { return $null }
+    return [string]$value.$RunValueName
+}
+
+function Set-RegistryRunValue([string]$RunKeyPath, [string]$RunValueName, [string]$Value) {
+    New-Item -Path $RunKeyPath -Force | Out-Null
+    New-ItemProperty -LiteralPath $RunKeyPath -Name $RunValueName -PropertyType String -Value $Value -Force | Out-Null
+}
+
+function Remove-RegistryRunValue([string]$RunKeyPath, [string]$RunValueName) {
+    Remove-ItemProperty -LiteralPath $RunKeyPath -Name $RunValueName -ErrorAction SilentlyContinue
 }
 
 function Get-ZipEntries([string]$Path) {
@@ -301,6 +335,7 @@ function Assert-PortableArchive([string]$Path, [string]$ExpectedVersion, [pscust
     $required = @(
         'VoiceDictation.exe',
         'vc_redist.x64.exe',
+        'VCREDIST-PROVENANCE.txt',
         'README.txt',
         'THIRD_PARTY_NOTICES.md',
         'DOTNET_THIRD_PARTY_NOTICES.txt'
@@ -364,6 +399,9 @@ function Assert-PortableArchive([string]$Path, [string]$ExpectedVersion, [pscust
     $exe = Join-Path $portableStage 'VoiceDictation.exe'
     $runtime = Join-Path $portableStage 'vc_redist.x64.exe'
     Assert-FileSha256 $runtime $VcRedistPin.Sha256 'Bundled VC++ redist'
+    if ((Get-Item -LiteralPath $runtime).Length -ne $VcRedistPin.Size) {
+        Fail "Bundled VC++ redist size does not match the reviewed pin ($($VcRedistPin.Size) bytes)."
+    }
     $signature = Get-AuthenticodeSignature -LiteralPath $runtime
     if ($signature.Status -ne 'Valid' -or $null -eq $signature.SignerCertificate) {
         Fail "vc_redist.x64.exe did not pass Authenticode validation."
@@ -375,6 +413,7 @@ function Assert-PortableArchive([string]$Path, [string]$ExpectedVersion, [pscust
     }
     $vcVersionInfo = (Get-Item -LiteralPath $runtime).VersionInfo
     $vcMetadata = @(
+        [pscustomobject]@{ Name = 'FileVersion'; Expected = $VcRedistPin.FileVersion; Actual = [string]$vcVersionInfo.FileVersion }
         [pscustomobject]@{ Name = 'ProductVersion'; Expected = $VcRedistPin.ProductVersion; Actual = [string]$vcVersionInfo.ProductVersion }
         [pscustomobject]@{ Name = 'ProductName'; Expected = $VcRedistPin.ProductName; Actual = [string]$vcVersionInfo.ProductName }
         [pscustomobject]@{ Name = 'OriginalFilename'; Expected = $VcRedistPin.OriginalFilename; Actual = [string]$vcVersionInfo.OriginalFilename }
@@ -384,6 +423,7 @@ function Assert-PortableArchive([string]$Path, [string]$ExpectedVersion, [pscust
             Fail "vc_redist.x64.exe $($metadata.Name) '$($metadata.Actual)' does not exactly match expected '$($metadata.Expected)'."
         }
     }
+    Assert-VcRedistEvidence (Join-Path $portableStage 'VCREDIST-PROVENANCE.txt') $VcRedistPin 'Portable VC++ provenance'
     Assert-ExecutableVersion $exe $ExpectedVersion 'Portable VoiceDictation.exe'
     Assert-PeAmd64 $exe 'Portable VoiceDictation.exe'
     foreach ($relative in $expectedRuntime) {
@@ -552,22 +592,25 @@ function Invoke-InstallerSmoke([string]$InstallerPath, [string]$ExpectedVersion)
     }
     $runKeyPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
     $runValueName = 'Voice Dictation'
-    $existingRunValue = Get-ItemProperty -LiteralPath $runKeyPath -Name $runValueName -ErrorAction SilentlyContinue
-    $runValueWasPresent = $null -ne $existingRunValue -and
-        $existingRunValue.PSObject.Properties.Name -contains $runValueName
-    $originalRunValue = if ($runValueWasPresent) { [string]$existingRunValue.$runValueName } else { $null }
+    $originalRunValue = Get-RegistryRunValue $runKeyPath $runValueName
 
     if (Test-Path -LiteralPath $installRoot) {
         Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
     try {
-        $arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=`"$installRoot`"", '/TASKS="startup"')
+        Remove-RegistryRunValue $runKeyPath $runValueName
+
+        # Default install must not create startup. Simulate the running app
+        # writing its exact owned value, then verify uninstall removes only it.
+        $arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=`"$installRoot`"")
         Clear-WorkflowTokens
         $install = Start-Process -FilePath $InstallerPath -ArgumentList $arguments -Wait -PassThru
         if ($install.ExitCode -ne 0) { Fail "Silent installer exited with code $($install.ExitCode)." }
         $installedExe = Join-Path $installRoot 'VoiceDictation.exe'
         if (-not (Test-Path -LiteralPath $installedExe -PathType Leaf)) { Fail 'Installer did not place VoiceDictation.exe.' }
         Assert-ExecutableVersion $installedExe $ExpectedVersion 'Installed VoiceDictation.exe'
+        if ($null -ne (Get-RegistryRunValue $runKeyPath $runValueName)) { Fail 'Default install unexpectedly created the HKCU startup value.' }
+        Assert-VcRedistEvidence (Join-Path $installRoot 'VCREDIST-PROVENANCE.txt') $vcRedistPin 'Installed VC++ provenance'
         $expectedRuntimeRelative = @(
             'runtimes\win-x64\ggml-base-whisper.dll',
             'runtimes\win-x64\ggml-cpu-whisper.dll',
@@ -586,11 +629,38 @@ function Invoke-InstallerSmoke([string]$InstallerPath, [string]$ExpectedVersion)
         $unsupportedInstalledRuntime = Get-ChildItem -LiteralPath (Join-Path $installRoot 'runtimes') -File -Recurse -ErrorAction SilentlyContinue |
             Where-Object { $_.FullName -match '(?i)\\(?:win-arm64|win-x86)\\' }
         if ($unsupportedInstalledRuntime) { Fail 'Installer installed an unsupported ARM64 or x86 runtime.' }
-        $runValue = Get-ItemProperty -LiteralPath $runKeyPath -Name $runValueName -ErrorAction SilentlyContinue
         $expectedRunValue = "`"$installedExe`" --background"
-        if ($null -eq $runValue -or $runValue.$runValueName -ne $expectedRunValue) {
-            Fail 'Installer did not create the expected HKCU startup value.'
-        }
+        Set-RegistryRunValue $runKeyPath $runValueName $expectedRunValue
+        $uninstaller = Join-Path $installRoot 'unins000.exe'
+        if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) { Fail 'Installer did not place an uninstaller.' }
+        $uninstall = Start-Process -FilePath $uninstaller -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
+        if ($uninstall.ExitCode -ne 0) { Fail "Silent uninstaller exited with code $($uninstall.ExitCode)." }
+        if (Test-Path -LiteralPath $installRoot) { Fail 'Uninstall left installation files behind.' }
+        if ($null -ne (Get-RegistryRunValue $runKeyPath $runValueName)) { Fail 'Uninstall did not remove the exact app-owned startup value.' }
+
+        # A user/other application value under the same name must survive.
+        $arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=`"$installRoot`"")
+        Clear-WorkflowTokens
+        $install = Start-Process -FilePath $InstallerPath -ArgumentList $arguments -Wait -PassThru
+        if ($install.ExitCode -ne 0) { Fail "Silent default installer exited with code $($install.ExitCode)." }
+        $unrelatedRunValue = '"C:\Other\OtherApp.exe" --background'
+        Set-RegistryRunValue $runKeyPath $runValueName $unrelatedRunValue
+        $uninstaller = Join-Path $installRoot 'unins000.exe'
+        $uninstall = Start-Process -FilePath $uninstaller -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
+        if ($uninstall.ExitCode -ne 0) { Fail "Unrelated-value uninstaller exited with code $($uninstall.ExitCode)." }
+        if ((Get-RegistryRunValue $runKeyPath $runValueName) -cne $unrelatedRunValue) { Fail 'Uninstall removed or changed an unrelated startup value.' }
+        Remove-RegistryRunValue $runKeyPath $runValueName
+
+        # Keep the explicit installer startup-task case and app self-tests.
+        $arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=`"$installRoot`"", '/TASKS="startup"')
+        Clear-WorkflowTokens
+        $install = Start-Process -FilePath $InstallerPath -ArgumentList $arguments -Wait -PassThru
+        if ($install.ExitCode -ne 0) { Fail "Silent startup-task installer exited with code $($install.ExitCode)." }
+        $installedExe = Join-Path $installRoot 'VoiceDictation.exe'
+        Assert-VcRedistEvidence (Join-Path $installRoot 'VCREDIST-PROVENANCE.txt') $vcRedistPin 'Installed VC++ provenance'
+        $runValue = Get-RegistryRunValue $runKeyPath $runValueName
+        $expectedRunValue = "`"$installedExe`" --background"
+        if ($runValue -cne $expectedRunValue) { Fail 'Installer did not create the expected HKCU startup value.' }
         Invoke-WindowsExecutable $installedExe @('--self-test') 'Installed --self-test'
         Invoke-WindowsExecutable $installedExe @('--inference-match-test') 'Installed --inference-match-test'
         $uninstaller = Join-Path $installRoot 'unins000.exe'
@@ -598,18 +668,18 @@ function Invoke-InstallerSmoke([string]$InstallerPath, [string]$ExpectedVersion)
         $uninstall = Start-Process -FilePath $uninstaller -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
         if ($uninstall.ExitCode -ne 0) { Fail "Silent uninstaller exited with code $($uninstall.ExitCode)." }
         if (Test-Path -LiteralPath $installRoot) { Fail 'Uninstall left installation files behind.' }
-        Write-Host "Silent install/startup-registry/self-test/uninstall smoke passed for $ExpectedVersion."
+        if ($null -ne (Get-RegistryRunValue $runKeyPath $runValueName)) { Fail 'Startup-task uninstall left the startup value behind.' }
+        Write-Host "Silent default-install/owned-startup/unrelated-value/startup-task/self-test/uninstall smoke passed for $ExpectedVersion."
     } finally {
-        # Inno's uninsdeletevalue intentionally removes the value it wrote.
-        # Restore the caller's prior state so the smoke test is non-destructive.
-        Restore-RegistryRunValue $runKeyPath $runValueName $runValueWasPresent $originalRunValue
+        if (Test-Path -LiteralPath $installRoot) { Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue }
+        if ($null -eq $originalRunValue) {
+            Remove-RegistryRunValue $runKeyPath $runValueName
+        } else {
+            Set-RegistryRunValue $runKeyPath $runValueName $originalRunValue
+        }
     }
-    $restoredRunValue = Get-ItemProperty -LiteralPath $runKeyPath -Name $runValueName -ErrorAction SilentlyContinue
-    $restoredPresent = $null -ne $restoredRunValue -and
-        $restoredRunValue.PSObject.Properties.Name -contains $runValueName
-    if ($restoredPresent -ne $runValueWasPresent -or ($runValueWasPresent -and $restoredRunValue.$runValueName -cne $originalRunValue)) {
-        Fail 'Installer smoke did not restore the pre-existing HKCU startup value exactly.'
-    }
+    $restoredRunValue = Get-RegistryRunValue $runKeyPath $runValueName
+    if ($restoredRunValue -cne $originalRunValue) { Fail 'Installer smoke did not restore the pre-existing HKCU startup value exactly.' }
 }
 
 Assert-Version $Version

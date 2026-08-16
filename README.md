@@ -50,8 +50,9 @@ selected version.
 
 1. `Voice-Dictation-Windows-x64-<version>-Portable.zip` (required). The root
    of the archive must contain `VoiceDictation.exe`, the official signed
-   `vc_redist.x64.exe`, `README.txt`, `THIRD_PARTY_NOTICES.md`, and the
-   separate `DOTNET_THIRD_PARTY_NOTICES.txt` runtime notice. It must also
+   `vc_redist.x64.exe`, `VCREDIST-PROVENANCE.txt`, `README.txt`,
+   `THIRD_PARTY_NOTICES.md`, and the separate `DOTNET_THIRD_PARTY_NOTICES.txt`
+   runtime notice. It must also
    contain exactly the four Whisper DLLs under each of
    `runtimes/win-x64/` and `runtimes/noavx/win-x64/`:
    `ggml-base-whisper.dll`, `ggml-cpu-whisper.dll`, `ggml-whisper.dll`, and

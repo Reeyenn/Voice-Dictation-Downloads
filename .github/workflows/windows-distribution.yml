@@ -67,7 +67,13 @@ jobs:
         # v4.3.1
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
         with:
-          dotnet-version: 10.0.x
+          dotnet-version: 10.0.400
+
+      - name: Verify exact .NET SDK
+        shell: pwsh
+        run: |
+          $actual = (dotnet --version).Trim()
+          if ($actual -cne '10.0.400') { throw "Expected .NET SDK 10.0.400, found $actual." }
 
       - name: Install pinned Inno Setup package
         shell: pwsh
@@ -76,9 +82,18 @@ jobs:
           $innoVersion = '6.7.1'
           choco install innosetup --version $innoVersion --yes --no-progress --limit-output
           if ($LASTEXITCODE -ne 0) { throw "Chocolatey could not install Inno Setup $innoVersion." }
-          if ($null -eq (Get-Command iscc.exe -ErrorAction SilentlyContinue)) {
+          $iscc = Get-Command iscc.exe -ErrorAction SilentlyContinue
+          if ($null -eq $iscc) {
             throw 'Inno Setup compiler is not available after installation.'
           }
+          $installedVersion = (Get-Item -LiteralPath $iscc.Source).VersionInfo.ProductVersion
+          if ($installedVersion -notmatch '^6\.7\.1(?:\.0)?$') {
+            throw "Expected Inno Setup 6.7.1, found $installedVersion."
+          }
+
+      - name: Verify distribution pins and provenance gates
+        shell: pwsh
+        run: ./scripts/Test-DistributionPins.ps1
 
       - name: Validate bootstrap assets, run Windows tests, and package
         shell: pwsh
