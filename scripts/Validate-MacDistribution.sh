@@ -63,6 +63,7 @@ trap cleanup EXIT
 APP_ASSET="Voice-Dictation-macOS-$VERSION.zip"
 VALIDATION_ASSET="Voice-Dictation-macOS-Universal-Validation-$VERSION.zip"
 RELEASE_JSON="$WORK_ROOT/release.json"
+VALIDATED_ASSET_URLS="$WORK_ROOT/validated-asset-urls.json"
 AUTH_HEADER="Authorization: Bearer $TOKEN"
 API_HEADER='Accept: application/vnd.github+json'
 API_VERSION_HEADER='X-GitHub-Api-Version: 2022-11-28'
@@ -93,12 +94,13 @@ with open(destination, 'w', encoding='utf-8') as handle:
 PY
 fi
 
-python3 - "$RELEASE_JSON" "$BOOTSTRAP_TAG" "$APP_ASSET" "$VALIDATION_ASSET" <<'PY'
+python3 - "$RELEASE_JSON" "$BOOTSTRAP_TAG" "$APP_ASSET" "$VALIDATION_ASSET" "$REPOSITORY" "$VALIDATED_ASSET_URLS" <<'PY'
 import json
+import re
 import sys
 from urllib.parse import urlparse
 
-path, expected_tag, app_name, validation_name = sys.argv[1:]
+path, expected_tag, app_name, validation_name, repository, validated_output = sys.argv[1:]
 with open(path, encoding='utf-8') as handle:
     release = json.load(handle)
 if release.get('tag_name') != expected_tag:
@@ -106,29 +108,55 @@ if release.get('tag_name') != expected_tag:
 if release.get('draft') is not True:
     raise SystemExit('the macOS bootstrap release must remain a draft during validation')
 assets = release.get('assets') or []
+validated_asset_urls = {}
 for expected in (app_name, validation_name):
     matches = [asset for asset in assets if asset.get('name') == expected]
     if len(matches) != 1:
         raise SystemExit(f'release must contain exactly one asset named {expected!r}')
-    parsed = urlparse(str(matches[0].get('url', '')))
-    if parsed.scheme != 'https' or parsed.hostname != 'api.github.com' or not parsed.path.startswith('/repos/') or '/releases/assets/' not in parsed.path:
-        raise SystemExit(f'asset {expected!r} did not resolve to the GitHub API release-asset endpoint')
+    raw_url = matches[0].get('url')
+    if not isinstance(raw_url, str) or not raw_url:
+        raise SystemExit(f'asset {expected!r} has no URL')
+    try:
+        parsed = urlparse(raw_url)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError as error:
+        raise SystemExit(f'asset {expected!r} has an invalid URL authority: {error}') from error
+    expected_path = rf'/repos/{re.escape(repository)}/releases/assets/[1-9][0-9]*'
+    if (
+        parsed.scheme != 'https'
+        or parsed.netloc not in {'api.github.com', 'api.github.com:443'}
+        or hostname != 'api.github.com'
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in (None, 443)
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+        or '?' in raw_url
+        or '#' in raw_url
+        or re.fullmatch(expected_path, parsed.path) is None
+    ):
+        raise SystemExit(f'asset {expected!r} did not resolve to an exact same-repository GitHub release-asset URL')
+    validated_asset_urls[expected] = raw_url
+with open(validated_output, 'w', encoding='utf-8') as handle:
+    json.dump(validated_asset_urls, handle, sort_keys=True)
 PY
 
 download_asset() {
   local asset_name="$1"
   local destination="$2"
   local asset_url
-  asset_url="$(python3 - "$RELEASE_JSON" "$asset_name" <<'PY'
+  asset_url="$(python3 - "$VALIDATED_ASSET_URLS" "$asset_name" <<'PY'
 import json
 import sys
 
 with open(sys.argv[1], encoding='utf-8') as handle:
-    release = json.load(handle)
-matches = [asset for asset in release.get('assets', []) if asset.get('name') == sys.argv[2]]
-if len(matches) != 1:
-    raise SystemExit(f'exactly one asset named {sys.argv[2]!r} is required')
-print(matches[0]['url'])
+    asset_urls = json.load(handle)
+asset_url = asset_urls.get(sys.argv[2])
+if not isinstance(asset_url, str) or not asset_url:
+    raise SystemExit(f'no validated URL exists for asset {sys.argv[2]!r}')
+print(asset_url)
 PY
 )"
   curl --fail --silent --show-error --location --retry 3 --retry-all-errors \
