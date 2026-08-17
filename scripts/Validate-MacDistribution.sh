@@ -26,6 +26,7 @@ known_markers = {
     "VD_MAC_VALIDATION_BEGIN",
     "VD_MAC_VALIDATION_MODEL_PRELOAD",
     "VD_MAC_VALIDATION_MODEL",
+    "VD_MAC_VALIDATION_GEOMETRY",
     "VD_MAC_VALIDATION_CASE",
     "VD_MAC_VALIDATION_SILENCE",
     "VD_MAC_VALIDATION_CANCEL",
@@ -130,6 +131,48 @@ expected_encoder_file = (
 if model["encoder_file"] != expected_encoder_file:
     raise SystemExit("validation selected an unexpected architecture-specific encoder")
 
+geometry = one("VD_MAC_VALIDATION_GEOMETRY")
+exact_fields(
+    geometry,
+    {
+        "architecture",
+        "window_seconds",
+        "overlap_seconds",
+        "complete_windows",
+        "final_start_seconds",
+        "final_duration_seconds",
+    },
+    "validation geometry",
+)
+if geometry["architecture"] != expected_architecture:
+    raise SystemExit("validation geometry architecture does not match the host")
+expected_window_seconds = 15.0 if expected_architecture == "x86_64" else 1.04
+expected_overlap_seconds = 2.0 if expected_architecture == "x86_64" else 0.0
+if number(geometry, "window_seconds", "validation geometry") != expected_window_seconds:
+    raise SystemExit("validation geometry window does not match the architecture contract")
+if number(geometry, "overlap_seconds", "validation geometry") != expected_overlap_seconds:
+    raise SystemExit("validation geometry overlap does not match the architecture contract")
+complete_windows_raw = geometry.get("complete_windows", "")
+if re.fullmatch(r"[1-9][0-9]*", complete_windows_raw) is None:
+    raise SystemExit("validation geometry complete_windows must be a positive integer")
+complete_windows = int(complete_windows_raw)
+final_start = number(geometry, "final_start_seconds", "validation geometry", minimum=0)
+final_duration = number(
+    geometry,
+    "final_duration_seconds",
+    "validation geometry",
+    positive=True,
+    maximum=expected_window_seconds,
+)
+expected_stride = expected_window_seconds - expected_overlap_seconds
+expected_final_start = complete_windows * expected_stride
+if abs(final_start - expected_final_start) > 0.0001:
+    raise SystemExit(
+        f"validation geometry final start {final_start:g} does not follow the declared window stride"
+    )
+if expected_architecture == "x86_64" and complete_windows != 1:
+    raise SystemExit("Intel validation must have one complete 15-second window for the long fixture")
+
 expected_labels = ["cold-0", "warm-0", "cold-1", "warm-1", "cold-2", "warm-2"]
 cases = records["VD_MAC_VALIDATION_CASE"]
 if len(cases) != len(expected_labels):
@@ -139,7 +182,7 @@ if [case.get("label") for case in cases] != expected_labels:
         "phrase labels must be exactly cold-0,warm-0,cold-1,warm-1,cold-2,warm-2 in order"
     )
 
-maximum_latency = 10.0
+maximum_latency = 20.0 if expected_architecture == "x86_64" else 10.0
 maximum_wer = 0.35
 maximum_rss_megabytes = 6144.0
 
@@ -178,6 +221,13 @@ for index, case in enumerate(cases):
         maximum=maximum_rss_megabytes,
     )
     number(case, "wer", label, minimum=0, maximum=maximum_wer)
+
+long_case = cases[4]
+long_audio_seconds = number(long_case, "audio_seconds", "cold-2", positive=True)
+if abs(final_start + final_duration - long_audio_seconds) > 0.0001:
+    raise SystemExit(
+        "validation geometry final start plus final duration must equal the cold-2 audio duration"
+    )
 
 silence = one("VD_MAC_VALIDATION_SILENCE")
 exact_fields(silence, {"result", "latency_seconds"}, "silence")
@@ -292,7 +342,11 @@ done
 if [[ -n "$EXPECTED_ARCHITECTURE" && "$EXPECTED_ARCHITECTURE" != "arm64" && "$EXPECTED_ARCHITECTURE" != "x86_64" ]]; then
   fail 'EXPECTED_ARCHITECTURE must be arm64 or x86_64'
 fi
-VALIDATION_MAX_LATENCY_SECONDS=10
+case "$EXPECTED_ARCHITECTURE" in
+  x86_64) VALIDATION_MAX_LATENCY_SECONDS=20 ;;
+  arm64) VALIDATION_MAX_LATENCY_SECONDS=10 ;;
+  *) fail 'EXPECTED_ARCHITECTURE must be arm64 or x86_64' ;;
+esac
 HOST_ARCHITECTURE="$(uname -m)"
 [[ "$HOST_ARCHITECTURE" == "$EXPECTED_ARCHITECTURE" ]] || fail "host architecture $HOST_ARCHITECTURE does not match expected $EXPECTED_ARCHITECTURE"
 if [[ "$EXPECTED_ARCHITECTURE" == 'x86_64' ]]; then

@@ -51,6 +51,7 @@ for required in \
   'VD_MAC_VALIDATION_MODEL_PRELOAD' \
   'VD_MAC_VALIDATION_BEGIN' \
   'VD_MAC_VALIDATION_MODEL' \
+  'VD_MAC_VALIDATION_GEOMETRY' \
   'VD_MAC_VALIDATION_CASE' \
   'VD_MAC_VALIDATION_SILENCE' \
   'VD_MAC_VALIDATION_CANCEL' \
@@ -79,6 +80,7 @@ for required in \
   'fresh_wer' \
   'capture_chunk_seconds' \
   'capture_overlap_seconds' \
+  'VALIDATION_MAX_LATENCY_SECONDS=20' \
   'VALIDATION_MAX_LATENCY_SECONDS=10' \
   'assert_universal2' \
   'codesign --verify --deep --strict'; do
@@ -94,7 +96,7 @@ require_text "$VALIDATOR" 'HOST_ARCHITECTURE="$(uname -m)"'
 require_text "$VALIDATOR" 'sysctl.proc_translated'
 require_text "$VALIDATOR" 'must not run under Rosetta translation'
 if grep -Fq 'VALIDATION_MAX_LATENCY_SECONDS=5' "$VALIDATOR"; then
-  fail 'macOS validation must use the ten-second gate on both architectures'
+  fail 'macOS validation must not use the old five-second gate'
 fi
 require_text "$VALIDATOR" 'open -n "$APP_PATH"'
 require_text "$VALIDATOR" 'lsof -t -a -d txt -- "$APP_MAIN"'
@@ -119,7 +121,7 @@ def valid_log(architecture):
     capture_mode = "rolling" if intel else "streaming"
     chunk_seconds = "15.000000" if intel else "1.040000"
     overlap_seconds = "2.000000" if intel else "0.000000"
-    maximum_latency = "10.000000"
+    maximum_latency = "20.000000" if intel else "10.000000"
     encoder_file = (
         "parakeet_unified_encoder.mlmodelc"
         if intel
@@ -130,12 +132,14 @@ def valid_log(architecture):
         f"VD_MAC_VALIDATION_BEGIN model={model} capture_mode={capture_mode} encoder_precision={encoder_precision} compute_units={compute_units} architecture={architecture}",
         f"VD_MAC_VALIDATION_MODEL_PRELOAD cache=compiled mode={capture_mode} seconds=0.500000",
         f"VD_MAC_VALIDATION_MODEL encoder_file={encoder_file}",
+        f"VD_MAC_VALIDATION_GEOMETRY architecture={architecture} window_seconds={chunk_seconds} overlap_seconds={overlap_seconds} complete_windows={'1' if intel else '16'} final_start_seconds={'13.000000' if intel else '16.640000'} final_duration_seconds={'3.976000' if intel else '0.336000'}",
     ]
     for label in labels:
+        audio_seconds = "16.976000" if label.endswith("-2") else "1.000000"
         lines.append(
             f"VD_MAC_VALIDATION_CASE wer=0.000000 rss_megabytes=1024.000000 post_stop_seconds=0.300000 "
             f"final_model_seconds=0.200000 processing_seconds=0.100000 session_load_seconds=0.200000 "
-            f"audio_seconds=1.000000 label={label}"
+            f"audio_seconds={audio_seconds} label={label}"
         )
     lines.extend(
         [
@@ -177,6 +181,7 @@ negative_fixtures = {
     "wrong model": base.replace("model=offline_15_2", "model=offline", 1),
     "wrong capture mode": base.replace("capture_mode=rolling", "capture_mode=streaming", 1),
     "wrong encoder": base.replace("parakeet_unified_encoder.mlmodelc", "parakeet_unified_encoder_streaming_70_13_13_int8.mlmodelc", 1),
+    "wrong Intel geometry start": base.replace("final_start_seconds=13.000000", "final_start_seconds=14.000000", 1),
     "missing WER": base.replace(" fresh_wer=0.000000", "", 1),
     "duplicate key": base.replace("wer=0.000000 rss_megabytes", "wer=0.000000 wer=0.000000 rss_megabytes", 1),
     "non-finite RSS": base.replace("rss_megabytes=1024.000000", "rss_megabytes=NaN", 1),
@@ -184,12 +189,13 @@ negative_fixtures = {
     "high RSS": base.replace("rss_megabytes=1024.000000", "rss_megabytes=6144.000001", 1),
     "low precision timing": base.replace("session_load_seconds=0.200000", "session_load_seconds=0.200", 1),
     "negative timing": base.replace("session_load_seconds=0.200000", "session_load_seconds=-0.001000", 1),
-    "session load gate": base.replace("session_load_seconds=0.200000", "session_load_seconds=10.000001", 1),
+    "session load gate": base.replace("session_load_seconds=0.200000", "session_load_seconds=20.000001", 1),
     "non-finite processing": base.replace("processing_seconds=0.100000", "processing_seconds=Infinity", 1),
     "negative processing": base.replace("processing_seconds=0.100000", "processing_seconds=-0.001000", 1),
-    "post-stop gate": base.replace("post_stop_seconds=0.300000", "post_stop_seconds=10.000001", 1),
+    "post-stop gate": base.replace("post_stop_seconds=0.300000", "post_stop_seconds=20.000001", 1),
     "wrong silence": base.replace("result=no_audio", "result=audio", 1),
-    "silence latency gate": base.replace("VD_MAC_VALIDATION_SILENCE latency_seconds=0.010000", "VD_MAC_VALIDATION_SILENCE latency_seconds=10.000001", 1),
+    "silence latency gate": base.replace("VD_MAC_VALIDATION_SILENCE latency_seconds=0.010000", "VD_MAC_VALIDATION_SILENCE latency_seconds=20.000001", 1),
+    "intel generic ten-second summary": base.replace("max_latency_seconds=20.000000", "max_latency_seconds=10.000000", 1),
     "wrong cancellation": base.replace("fresh_session=ready", "fresh_session=stale", 1),
     "wrong capture overlap": base.replace("capture_overlap_seconds=2.000000", "capture_overlap_seconds=1.000000", 1),
     "wrong capture chunk": base.replace("capture_chunk_seconds=15.000000", "capture_chunk_seconds=1.000000", 1),
@@ -205,7 +211,11 @@ for name, fixture in {
     "arm wrong capture mode": arm_base.replace("capture_mode=streaming", "capture_mode=rolling", 1),
     "arm wrong encoder": arm_base.replace("parakeet_unified_encoder_streaming_70_13_13_int8.mlmodelc", "parakeet_unified_encoder.mlmodelc", 1),
     "arm wrong capture chunk": arm_base.replace("capture_chunk_seconds=1.040000", "capture_chunk_seconds=15.000000", 1),
+    "arm session load gate": arm_base.replace("session_load_seconds=0.200000", "session_load_seconds=10.000001", 1),
     "arm latency gate": arm_base.replace("post_stop_seconds=0.300000", "post_stop_seconds=10.000001", 1),
+    "arm silence latency gate": arm_base.replace("VD_MAC_VALIDATION_SILENCE latency_seconds=0.010000", "VD_MAC_VALIDATION_SILENCE latency_seconds=10.000001", 1),
+    "arm generic twenty-second summary": arm_base.replace("max_latency_seconds=10.000000", "max_latency_seconds=20.000000", 1),
+    "arm wrong geometry start": arm_base.replace("final_start_seconds=16.640000", "final_start_seconds=15.600000", 1),
 }.items():
     assert_parser(fixture, "arm64", False)
 

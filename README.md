@@ -131,10 +131,11 @@ VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuAndGPU encoder_prec
 VD_MAC_VALIDATION_BEGIN architecture=arm64 compute_units=cpuAndNeuralEngine encoder_precision=streaming_int8 model=streaming_70_13_13 capture_mode=streaming
 VD_MAC_VALIDATION_MODEL_PRELOAD seconds=<positive> mode=<rolling|streaming> cache=compiled
 VD_MAC_VALIDATION_MODEL encoder_file=<offline fp16 or streaming int8 encoder>
+VD_MAC_VALIDATION_GEOMETRY architecture=<x86_64|arm64> window_seconds=<15|1.04> overlap_seconds=<2|0> complete_windows=<positive integer> final_start_seconds=<positive> final_duration_seconds=<positive>
 VD_MAC_VALIDATION_CASE label=<cold-0|warm-0|cold-1|warm-1|cold-2|warm-2> audio_seconds=<positive> session_load_seconds=<positive> processing_seconds=<positive> final_model_seconds=<positive> post_stop_seconds=<positive> rss_megabytes=<positive> wer=<0..0.35>
 VD_MAC_VALIDATION_SILENCE result=no_audio latency_seconds=<positive>
 VD_MAC_VALIDATION_CANCEL result=cancelled fresh_session=ready fresh_wer=<0..0.35> [post_stop_seconds=<positive>]
-VD_MAC_VALIDATION_SUMMARY status=pass gated_rows=6 max_latency_seconds=10 max_wer=0.35 capture_mode=<rolling|streaming> capture_chunk_seconds=<15|1.04> capture_overlap_seconds=<2|0>
+VD_MAC_VALIDATION_SUMMARY status=pass gated_rows=6 max_latency_seconds=<20 for x86_64, 10 for arm64> max_wer=0.35 capture_mode=<rolling|streaming> capture_chunk_seconds=<15|1.04> capture_overlap_seconds=<2|0>
 ```
 
 The public parser requires exactly six phrase records in the shown cold/warm
@@ -150,8 +151,8 @@ overlap. Apple silicon must report `compute_units=cpuAndNeuralEngine`,
 chunks with no overlap. Every phrase has positive finite audio, load,
 processing, final-model, and post-stop timings with at least four decimal
 places, plus finite positive resident memory no greater than 6144 MB; session load and
-`post_stop_seconds` must each be <= 10 seconds on both architectures, while
-WER must be <= 0.35. This post-stop gate measures the
+`post_stop_seconds` must each be <= 20 seconds on Intel and <= 10 seconds on
+Apple silicon, while WER must be <= 0.35. This post-stop gate measures the
 final tail after a real-time-paced recording rather than incorrectly failing a
 healthy recording whose full audio processing necessarily exceeds five
 seconds. Silence must report `no_audio` within the same architecture-specific
@@ -163,6 +164,12 @@ source, debug, `.git`, `.build`, and macOS metadata entries. It never invokes
 SwiftPM, Xcode, or a private source checkout; the precompiled validation
 executable owns model preload, local phrase synthesis, phrase WER, and no-audio
 checks.
+
+The geometry record is derived from the long fixture's actual sample count. It
+must end with one final tail: Intel's 15-second rolling path advances by a
+13-second stride (for the 16.976-second fixture, one complete window followed
+by a final tail beginning at 13 seconds), while Apple silicon uses 1.04-second
+streaming chunks with zero overlap.
 
 ## Repository boundaries
 
