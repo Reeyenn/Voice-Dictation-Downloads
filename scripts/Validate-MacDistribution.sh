@@ -4,6 +4,214 @@ set -euo pipefail
 # Binary-only macOS release validation. This script intentionally consumes
 # only assets from the public distribution repository; it never checks out or
 # builds the private application source.
+parse_validation_log() {
+  local validation_log="$1"
+  local expected_architecture="$2"
+  python3 - "$validation_log" "$expected_architecture" <<'PY'
+import math
+import re
+import sys
+from pathlib import Path
+
+path, expected_architecture = sys.argv[1:]
+if expected_architecture not in {"x86_64", "arm64"}:
+    raise SystemExit(f"unsupported expected architecture: {expected_architecture!r}")
+
+try:
+    text = Path(path).read_text(encoding="utf-8")
+except OSError as error:
+    raise SystemExit(f"could not read validation output: {error}") from error
+
+known_markers = {
+    "VD_MAC_VALIDATION_BEGIN",
+    "VD_MAC_VALIDATION_MODEL_PRELOAD",
+    "VD_MAC_VALIDATION_MODEL",
+    "VD_MAC_VALIDATION_CASE",
+    "VD_MAC_VALIDATION_SILENCE",
+    "VD_MAC_VALIDATION_CANCEL",
+    "VD_MAC_VALIDATION_SUMMARY",
+}
+
+def parse_record(line_number, line, marker):
+    tokens = line.strip().split()
+    if not tokens or tokens[0] != marker:
+        raise SystemExit(f"line {line_number}: expected {marker}")
+    fields = {}
+    for token in tokens[1:]:
+        if token.count("=") != 1:
+            raise SystemExit(f"line {line_number}: malformed key/value token {token!r}")
+        key, value = token.split("=", 1)
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", key) or not value:
+            raise SystemExit(f"line {line_number}: malformed key/value token {token!r}")
+        if key in fields:
+            raise SystemExit(f"line {line_number}: duplicate field {key!r}")
+        fields[key] = value
+    return fields
+
+records = {marker: [] for marker in known_markers}
+for line_number, line in enumerate(text.splitlines(), 1):
+    tokens = line.strip().split()
+    if not tokens:
+        continue
+    marker = tokens[0]
+    if marker.startswith("VD_MAC_VALIDATION_"):
+        if marker not in known_markers:
+            raise SystemExit(f"line {line_number}: unknown validation marker {marker!r}")
+        records[marker].append(parse_record(line_number, line, marker))
+
+def one(marker):
+    values = records[marker]
+    if len(values) != 1:
+        raise SystemExit(f"validation output must contain exactly one {marker}; found {len(values)}")
+    return values[0]
+
+def exact_fields(record, expected, label):
+    actual = set(record)
+    expected = set(expected)
+    if actual != expected:
+        missing = sorted(expected - actual)
+        extra = sorted(actual - expected)
+        raise SystemExit(f"{label} fields mismatch; missing={missing!r} extra={extra!r}")
+
+def number(record, key, label, *, positive=False, minimum=None, maximum=None):
+    try:
+        value = float(record[key])
+    except (KeyError, ValueError) as error:
+        raise SystemExit(f"{label} has a non-numeric {key}") from error
+    if not math.isfinite(value):
+        raise SystemExit(f"{label} has a non-finite {key}")
+    if positive and value <= 0:
+        raise SystemExit(f"{label} {key} must be positive")
+    if minimum is not None and value < minimum:
+        raise SystemExit(f"{label} {key} is below {minimum}")
+    if maximum is not None and value > maximum:
+        raise SystemExit(f"{label} {key} exceeds {maximum}")
+    return value
+
+begin = one("VD_MAC_VALIDATION_BEGIN")
+exact_fields(begin, {"architecture", "compute_units", "encoder_precision", "model"}, "begin")
+if begin["architecture"] != expected_architecture:
+    raise SystemExit(f"validation ran as {begin['architecture']}, expected {expected_architecture}")
+expected_compute_units = "cpuOnly" if expected_architecture == "x86_64" else "cpuAndNeuralEngine"
+if begin["compute_units"] != expected_compute_units:
+    raise SystemExit(
+        f"validation compute_units={begin['compute_units']!r}, expected {expected_compute_units!r}"
+    )
+if begin["encoder_precision"] != "streaming_int8":
+    raise SystemExit("validation must use encoder_precision=streaming_int8")
+if begin["model"] != "streaming_70_13_13":
+    raise SystemExit("validation must use model=streaming_70_13_13")
+
+preload = one("VD_MAC_VALIDATION_MODEL_PRELOAD")
+exact_fields(preload, {"seconds", "mode", "cache"}, "model preload")
+number(preload, "seconds", "model preload", positive=True)
+if preload["mode"] != "streaming" or preload["cache"] != "compiled":
+    raise SystemExit("model preload must report mode=streaming cache=compiled")
+
+model = one("VD_MAC_VALIDATION_MODEL")
+exact_fields(model, {"encoder_file"}, "model")
+if model["encoder_file"] != "parakeet_unified_encoder_streaming_70_13_13_int8.mlmodelc":
+    raise SystemExit("validation selected an unexpected streaming encoder")
+
+expected_labels = ["cold-0", "warm-0", "cold-1", "warm-1", "cold-2", "warm-2"]
+cases = records["VD_MAC_VALIDATION_CASE"]
+if len(cases) != len(expected_labels):
+    raise SystemExit(f"validation output must contain exactly six phrase cases; found {len(cases)}")
+if [case.get("label") for case in cases] != expected_labels:
+    raise SystemExit(
+        "phrase labels must be exactly cold-0,warm-0,cold-1,warm-1,cold-2,warm-2 in order"
+    )
+
+maximum_latency = 5.0
+maximum_wer = 0.35
+for index, case in enumerate(cases):
+    label = case["label"]
+    exact_fields(
+        case,
+        {
+            "label",
+            "audio_seconds",
+            "session_load_seconds",
+            "latency_seconds",
+            "final_latency_seconds",
+            "total_seconds",
+            "rss_megabytes",
+            "wer",
+        },
+        f"case {label}",
+    )
+    number(case, "audio_seconds", label, positive=True)
+    number(case, "session_load_seconds", label, positive=True)
+    number(case, "latency_seconds", label, positive=True)
+    number(case, "final_latency_seconds", label, positive=True, maximum=maximum_latency)
+    number(case, "total_seconds", label, positive=True, maximum=maximum_latency)
+    number(case, "rss_megabytes", label, positive=True)
+    number(case, "wer", label, minimum=0, maximum=maximum_wer)
+
+silence = one("VD_MAC_VALIDATION_SILENCE")
+exact_fields(silence, {"result", "latency_seconds"}, "silence")
+if silence["result"] != "no_audio":
+    raise SystemExit("silence check must report result=no_audio")
+number(silence, "latency_seconds", "silence", positive=True, maximum=maximum_latency)
+
+cancel = one("VD_MAC_VALIDATION_CANCEL")
+allowed_cancel_fields = {"result", "fresh_session", "fresh_wer", "total_seconds"}
+if set(cancel) not in (
+    {"result", "fresh_session", "fresh_wer"},
+    allowed_cancel_fields,
+):
+    raise SystemExit("cancellation fields must include result, fresh_session, and fresh_wer")
+if cancel["result"] != "cancelled" or cancel["fresh_session"] != "ready":
+    raise SystemExit("cancellation must report result=cancelled fresh_session=ready")
+number(cancel, "fresh_wer", "fresh-after-cancel", minimum=0, maximum=maximum_wer)
+if "total_seconds" in cancel:
+    number(cancel, "total_seconds", "fresh-after-cancel", positive=True, maximum=maximum_latency)
+
+summary = one("VD_MAC_VALIDATION_SUMMARY")
+exact_fields(
+    summary,
+    {
+        "status",
+        "gated_rows",
+        "max_latency_seconds",
+        "max_wer",
+        "streaming_chunk_seconds",
+        "streaming_overlap_seconds",
+    },
+    "summary",
+)
+if summary["status"] != "pass" or summary["gated_rows"] != "6":
+    raise SystemExit("summary must report status=pass gated_rows=6")
+if number(summary, "max_latency_seconds", "summary") != maximum_latency:
+    raise SystemExit("summary max_latency_seconds must be 5")
+if number(summary, "max_wer", "summary") != maximum_wer:
+    raise SystemExit("summary max_wer must be 0.35")
+if number(summary, "streaming_chunk_seconds", "summary") != 1:
+    raise SystemExit("summary streaming_chunk_seconds must be 1")
+if number(summary, "streaming_overlap_seconds", "summary") != 0:
+    raise SystemExit("summary streaming_overlap_seconds must be 0")
+
+print(
+    "Mac validation measurements: "
+    f"model_preload_seconds={float(preload['seconds']):.3f} "
+    f"cases={len(cases)} "
+    f"worst_wer={max(float(case['wer']) for case in cases):.3f} "
+    f"worst_total_seconds={max(float(case['total_seconds']) for case in cases):.3f} "
+    f"worst_final_latency_seconds={max(float(case['final_latency_seconds']) for case in cases):.3f} "
+    "silence=no_audio cancellation=cancelled"
+)
+PY
+}
+
+if [[ "${1:-}" == "--parse-validation-log" ]]; then
+  [[ $# -eq 3 ]] || {
+    echo "usage: $0 --parse-validation-log <log-path> <expected-architecture>" >&2
+    exit 64
+  }
+  parse_validation_log "$2" "$3"
+  exit 0
+fi
+
 if [[ $# -ne 4 ]]; then
   echo "usage: $0 <version> <bootstrap-tag> <app-zip-sha256> <validation-zip-sha256>" >&2
   exit 64
@@ -310,107 +518,7 @@ validation_status=${PIPESTATUS[0]}
 set -e
 [[ "$validation_status" -eq 0 ]] || fail "Swift validation bundle exited with $validation_status"
 
-python3 - "$validation_log" "${EXPECTED_ARCHITECTURE:-$(uname -m)}" <<'PY'
-import re
-import sys
-
-text = open(sys.argv[1], encoding='utf-8').read()
-expected_architecture = sys.argv[2]
-compute_units_by_architecture = {
-    'x86_64': 'cpuAndGPU',
-    'arm64': 'cpuAndNeuralEngine',
-}
-encoder_precision_by_architecture = {
-    'x86_64': 'fp16',
-    'arm64': 'int8',
-}
-encoder_file_by_architecture = {
-    'x86_64': 'parakeet_unified_encoder.mlmodelc',
-    'arm64': 'parakeet_unified_encoder_int8.mlmodelc',
-}
-begin_lines = re.findall(r'(?m)^VD_MAC_VALIDATION_BEGIN[^\r\n]*$', text)
-if len(begin_lines) != 1:
-    raise SystemExit(
-        f'validation output must contain exactly one VD_MAC_VALIDATION_BEGIN line; '
-        f'found {len(begin_lines)}'
-    )
-begin = re.fullmatch(
-    r'VD_MAC_VALIDATION_BEGIN\s+architecture=(?P<architecture>[^\s]+)\s+'
-    r'compute_units=(?P<compute_units>[^\s]+)\s+'
-    r'encoder_precision=(?P<encoder_precision>[^\s]+)',
-    begin_lines[0],
-)
-if begin is None:
-    raise SystemExit(
-        'validation output begin marker must contain exactly architecture, compute_units, and encoder_precision'
-    )
-model_lines = re.findall(r'(?m)^VD_MAC_VALIDATION_MODEL[ \t]+[^\r\n]*$', text)
-if len(model_lines) != 1:
-    raise SystemExit(
-        f'validation output must contain exactly one VD_MAC_VALIDATION_MODEL line; '
-        f'found {len(model_lines)}'
-    )
-model = re.fullmatch(
-    r'VD_MAC_VALIDATION_MODEL\s+encoder_file=(?P<encoder_file>[^\s]+)',
-    model_lines[0],
-)
-if model is None:
-    raise SystemExit(
-        'validation output model marker must contain exactly encoder_file'
-    )
-preload = re.search(r'VD_MAC_VALIDATION_MODEL_PRELOAD\s+seconds=([0-9]+(?:\.[0-9]+)?)', text)
-cases = re.findall(r'VD_MAC_VALIDATION_CASE\s+label=([^\s]+).*?latency_seconds=([0-9]+(?:\.[0-9]+)?)\s+wer=([0-9]+(?:\.[0-9]+)?)', text)
-silence = re.search(r'VD_MAC_VALIDATION_SILENCE\s+result=no_audio', text)
-summary = re.search(r'VD_MAC_VALIDATION_SUMMARY\s+status=pass\b', text)
-reported_architecture = begin.group('architecture')
-reported_compute_units = begin.group('compute_units')
-reported_encoder_precision = begin.group('encoder_precision')
-reported_encoder_file = model.group('encoder_file')
-if expected_architecture not in compute_units_by_architecture:
-    raise SystemExit(f'unsupported expected architecture: {expected_architecture}')
-if reported_architecture not in compute_units_by_architecture:
-    raise SystemExit(f'validation reported unsupported architecture: {reported_architecture}')
-if reported_architecture != expected_architecture:
-    raise SystemExit(f'validation ran as {reported_architecture}, expected {expected_architecture}')
-expected_compute_units = compute_units_by_architecture[expected_architecture]
-if reported_compute_units != expected_compute_units:
-    raise SystemExit(
-        f'validation ran with compute_units={reported_compute_units}, '
-        f'expected {expected_compute_units} for {expected_architecture}'
-    )
-expected_encoder_precision = encoder_precision_by_architecture[expected_architecture]
-if reported_encoder_precision != expected_encoder_precision:
-    raise SystemExit(
-        f'validation ran with encoder_precision={reported_encoder_precision}, '
-        f'expected {expected_encoder_precision} for {expected_architecture}'
-    )
-expected_encoder_file = encoder_file_by_architecture[expected_architecture]
-if reported_encoder_file != expected_encoder_file:
-    raise SystemExit(
-        f'validation ran with encoder_file={reported_encoder_file}, '
-        f'expected {expected_encoder_file} for {expected_architecture}'
-    )
-if preload is None:
-    raise SystemExit('validation output is missing model preload seconds')
-if len(cases) < 6:
-    raise SystemExit(f'validation output contains only {len(cases)} phrase cases; six cold/warm cases are required')
-if silence is None:
-    raise SystemExit('validation output is missing the no-audio silence check')
-if summary is None:
-    raise SystemExit('validation output is missing a passing summary')
-preload_seconds = float(preload.group(1))
-maximum_wer = 0.35
-maximum_latency = 5.0
-worst_wer = max(float(row[2]) for row in cases)
-worst_latency = max(float(row[1]) for row in cases)
-if preload_seconds <= 0 or worst_latency <= 0:
-    raise SystemExit('validation timings must be positive')
-if worst_wer > maximum_wer:
-    raise SystemExit(f'synthesized phrase WER {worst_wer:.3f} exceeds maximum {maximum_wer:.3f}')
-if worst_latency > maximum_latency:
-    raise SystemExit(f'synthesized phrase latency {worst_latency:.3f}s exceeds maximum {maximum_latency:.3f}s')
-print(f'Mac validation measurements: model_preload_seconds={preload_seconds:.3f} cases={len(cases)} worst_wer={worst_wer:.3f} worst_latency_seconds={worst_latency:.3f} silence=no_audio')
-PY
+parse_validation_log "$validation_log" "${EXPECTED_ARCHITECTURE:-$(uname -m)}"
 
 # Exercise LaunchServices only after the validation bundle has completed and
 # populated the shared model cache.
