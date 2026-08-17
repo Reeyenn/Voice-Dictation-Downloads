@@ -66,6 +66,7 @@ require_text "$VALIDATOR" 'lsof -t -a -d txt -- "$APP_MAIN"'
 require_text "$VALIDATOR" 'ps -axo pid,ppid,comm,args'
 require_text "$VALIDATOR" 'tail -n 40 "$launch_log"'
 require_text "$VALIDATOR" 'redact_diagnostics'
+require_text "$VALIDATOR" 'Complete the source-free validation bundle before launching the app.'
 
 python3 - "$VALIDATOR" <<'PY'
 from pathlib import Path
@@ -167,11 +168,13 @@ lsof_line="$(grep -n 'lsof -t -a -d txt -- \"\$APP_MAIN\"' "$VALIDATOR" | head -
 diagnostics_line="$(grep -n '^[[:space:]]*show_launch_diagnostics$' "$VALIDATOR" | head -n 1 | cut -d: -f1)"
 cleanup_line="$(grep -n 'kill \"\$app_pid\"' "$VALIDATOR" | head -n 1 | cut -d: -f1)"
 runner_line="$(grep -n 'run-mac-validation\.sh.*--max-latency-seconds' "$VALIDATOR" | head -n 1 | cut -d: -f1)"
-if [[ -z "$scrub_line" || -z "$open_line" || -z "$lsof_line" || -z "$diagnostics_line" || -z "$cleanup_line" || -z "$runner_line" || \
-      "$scrub_line" -ge "$open_line" || "$scrub_line" -ge "$runner_line" || \
+marker_parse_line="$(grep -n '^python3 - \"\$validation_log\"' "$VALIDATOR" | head -n 1 | cut -d: -f1)"
+if [[ -z "$scrub_line" || -z "$open_line" || -z "$lsof_line" || -z "$diagnostics_line" || -z "$cleanup_line" || -z "$runner_line" || -z "$marker_parse_line" || \
+      "$scrub_line" -ge "$runner_line" || "$runner_line" -ge "$marker_parse_line" || \
+      "$marker_parse_line" -ge "$open_line" || \
       "$open_line" -ge "$lsof_line" || "$lsof_line" -ge "$diagnostics_line" || \
-      "$diagnostics_line" -ge "$cleanup_line" || "$cleanup_line" -ge "$runner_line" ]]; then
-  fail 'token scrub, exact PID launch check, diagnostics, cleanup, and validator launch are out of order'
+      "$diagnostics_line" -ge "$cleanup_line" ]]; then
+  fail 'token scrub, model validation, marker parsing, exact PID launch check, diagnostics, and cleanup are out of order'
 fi
 
 bash -n "$VALIDATOR"
