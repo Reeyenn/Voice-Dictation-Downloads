@@ -320,17 +320,25 @@ compute_units_by_architecture = {
     'x86_64': 'cpuAndGPU',
     'arm64': 'cpuAndNeuralEngine',
 }
-begin = re.search(
+begin_lines = re.findall(r'(?m)^VD_MAC_VALIDATION_BEGIN[^\r\n]*$', text)
+if len(begin_lines) != 1:
+    raise SystemExit(
+        f'validation output must contain exactly one VD_MAC_VALIDATION_BEGIN line; '
+        f'found {len(begin_lines)}'
+    )
+begin = re.fullmatch(
     r'VD_MAC_VALIDATION_BEGIN\s+architecture=(?P<architecture>[^\s]+)\s+'
     r'compute_units=(?P<compute_units>[^\s]+)',
-    text,
+    begin_lines[0],
 )
+if begin is None:
+    raise SystemExit(
+        'validation output begin marker must contain exactly architecture and compute_units'
+    )
 preload = re.search(r'VD_MAC_VALIDATION_MODEL_PRELOAD\s+seconds=([0-9]+(?:\.[0-9]+)?)', text)
 cases = re.findall(r'VD_MAC_VALIDATION_CASE\s+label=([^\s]+).*?latency_seconds=([0-9]+(?:\.[0-9]+)?)\s+wer=([0-9]+(?:\.[0-9]+)?)', text)
 silence = re.search(r'VD_MAC_VALIDATION_SILENCE\s+result=no_audio', text)
 summary = re.search(r'VD_MAC_VALIDATION_SUMMARY\s+status=pass\b', text)
-if begin is None:
-    raise SystemExit('validation output is missing native architecture and compute units')
 reported_architecture = begin.group('architecture')
 reported_compute_units = begin.group('compute_units')
 if expected_architecture not in compute_units_by_architecture:

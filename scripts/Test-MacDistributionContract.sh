@@ -143,23 +143,30 @@ for marker in (
     "compute_units_by_architecture = {",
     "'x86_64': 'cpuAndGPU',",
     "'arm64': 'cpuAndNeuralEngine',",
+    "begin_lines = re.findall(r'(?m)^VD_MAC_VALIDATION_BEGIN[^\\r\\n]*$', text)",
+    'begin = re.fullmatch(',
     "begin.group('compute_units')",
+    'exactly one VD_MAC_VALIDATION_BEGIN line',
+    'exactly architecture and compute_units',
     "validation reported unsupported architecture",
 ):
     if marker not in validator:
         raise SystemExit(f'validator is missing compute-policy marker: {marker}')
 
-begin_pattern = re.compile(
-    r'VD_MAC_VALIDATION_BEGIN\s+architecture=(?P<architecture>[^\s]+)\s+'
-    r'compute_units=(?P<compute_units>[^\s]+)'
-)
 compute_units_by_architecture = {
     'x86_64': 'cpuAndGPU',
     'arm64': 'cpuAndNeuralEngine',
 }
 
 def accepted(marker: str, expected_architecture: str) -> bool:
-    begin = begin_pattern.search(marker)
+    begin_lines = re.findall(r'(?m)^VD_MAC_VALIDATION_BEGIN[^\r\n]*$', marker)
+    if len(begin_lines) != 1:
+        return False
+    begin = re.fullmatch(
+        r'VD_MAC_VALIDATION_BEGIN\s+architecture=(?P<architecture>[^\s]+)\s+'
+        r'compute_units=(?P<compute_units>[^\s]+)',
+        begin_lines[0],
+    )
     if begin is None or expected_architecture not in compute_units_by_architecture:
         return False
     architecture = begin.group('architecture')
@@ -178,6 +185,15 @@ fixtures = {
     'VD_MAC_VALIDATION_BEGIN architecture=arm64 compute_units=cpuAndGPU': ('arm64', False),
     'VD_MAC_VALIDATION_BEGIN architecture=x86_64': ('x86_64', False),
     'VD_MAC_VALIDATION_BEGIN architecture=powerpc64 compute_units=cpuAndGPU': ('powerpc64', False),
+    (
+        'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuAndGPU\n'
+        'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuAndGPU'
+    ): ('x86_64', False),
+    (
+        'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuAndGPU\n'
+        'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuOnly'
+    ): ('x86_64', False),
+    'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuAndGPU model=default': ('x86_64', False),
 }
 for marker, (expected_architecture, expected) in fixtures.items():
     actual = accepted(marker, expected_architecture)
