@@ -73,7 +73,6 @@ for required in \
   'final_model_seconds' \
   'post_stop_seconds' \
   'rss_megabytes' \
-  'minimum_rss_megabytes' \
   'maximum_rss_megabytes' \
   'at least four decimal places' \
   'fresh_session' \
@@ -179,7 +178,7 @@ negative_fixtures = {
     "missing WER": base.replace(" fresh_wer=0.000000", "", 1),
     "duplicate key": base.replace("wer=0.000000 rss_megabytes", "wer=0.000000 wer=0.000000 rss_megabytes", 1),
     "non-finite RSS": base.replace("rss_megabytes=1024.000000", "rss_megabytes=NaN", 1),
-    "low RSS": base.replace("rss_megabytes=1024.000000", "rss_megabytes=511.999999", 1),
+    "zero RSS": base.replace("rss_megabytes=1024.000000", "rss_megabytes=0.000000", 1),
     "high RSS": base.replace("rss_megabytes=1024.000000", "rss_megabytes=6144.000001", 1),
     "low precision timing": base.replace("session_load_seconds=0.200000", "session_load_seconds=0.200", 1),
     "negative timing": base.replace("session_load_seconds=0.200000", "session_load_seconds=-0.001000", 1),

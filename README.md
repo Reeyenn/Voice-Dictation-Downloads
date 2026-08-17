@@ -149,7 +149,7 @@ overlap. Apple silicon must report `compute_units=cpuAndNeuralEngine`,
 `parakeet_unified_encoder_streaming_70_13_13_int8.mlmodelc`, and 1.04-second
 chunks with no overlap. Every phrase has positive finite audio, load,
 processing, final-model, and post-stop timings with at least four decimal
-places, plus resident memory between 512 and 6144 MB; session load and
+places, plus finite positive resident memory no greater than 6144 MB; session load and
 `post_stop_seconds` must each be <= 10 seconds on Intel and <= 5 seconds on
 Apple silicon, while WER must be <= 0.35. This post-stop gate measures the
 final tail after a real-time-paced recording rather than incorrectly failing a

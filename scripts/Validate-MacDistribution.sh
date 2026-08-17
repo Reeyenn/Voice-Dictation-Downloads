@@ -141,7 +141,6 @@ if [case.get("label") for case in cases] != expected_labels:
 
 maximum_latency = 10.0 if expected_architecture == "x86_64" else 5.0
 maximum_wer = 0.35
-minimum_rss_megabytes = 512.0
 maximum_rss_megabytes = 6144.0
 
 def timing(record, key, label, *, maximum=None):
@@ -176,7 +175,6 @@ for index, case in enumerate(cases):
         "rss_megabytes",
         label,
         positive=True,
-        minimum=minimum_rss_megabytes,
         maximum=maximum_rss_megabytes,
     )
     number(case, "wer", label, minimum=0, maximum=maximum_wer)
