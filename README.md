@@ -122,24 +122,34 @@ actual LaunchServices start on each host.
 
 The validation ZIP must contain the root
 `Voice-Dictation-MacValidation/VoiceDictationMacValidation` executable and
-`run-mac-validation.sh`. The executable is invoked directly on each native
-host with fixed WER/latency gates and must emit the validator machine-readable
-records before exiting successfully:
+`run-mac-validation.sh`. The packaged launcher invokes the executable on each
+native host with fixed WER/latency gates, and it must emit the validator
+machine-readable records before exiting successfully:
 
 ```text
-VD_MAC_VALIDATION_BEGIN architecture=<x86_64|arm64> ...
-VD_MAC_VALIDATION_MODEL_PRELOAD seconds=<seconds>
-VD_MAC_VALIDATION_CASE label=<cold|warm>-<n> ... latency_seconds=<seconds> wer=<wer>
-VD_MAC_VALIDATION_SILENCE result=no_audio
-VD_MAC_VALIDATION_SUMMARY status=pass ...
+VD_MAC_VALIDATION_BEGIN architecture=<x86_64|arm64> compute_units=<cpuOnly|cpuAndNeuralEngine> encoder_precision=streaming_int8 model=streaming_70_13_13
+VD_MAC_VALIDATION_MODEL_PRELOAD seconds=<positive> mode=streaming cache=compiled
+VD_MAC_VALIDATION_MODEL encoder_file=parakeet_unified_encoder_streaming_70_13_13_int8.mlmodelc
+VD_MAC_VALIDATION_CASE label=<cold-0|warm-0|cold-1|warm-1|cold-2|warm-2> audio_seconds=<positive> session_load_seconds=<positive> latency_seconds=<positive> final_latency_seconds=<positive> total_seconds=<positive> rss_megabytes=<positive> wer=<0..0.35>
+VD_MAC_VALIDATION_SILENCE result=no_audio latency_seconds=<positive>
+VD_MAC_VALIDATION_CANCEL result=cancelled fresh_session=ready fresh_wer=<0..0.35> [total_seconds=<positive>]
+VD_MAC_VALIDATION_SUMMARY status=pass gated_rows=6 max_latency_seconds=5 max_wer=0.35 streaming_chunk_seconds=1 streaming_overlap_seconds=0
 ```
 
-The public workflow enforces WER <= 0.35 and phrase latency <= 5 seconds for
-the six cold/warm synthesized-phrase cases, checks model preload and silence,
-and rejects source, debug, `.git`, `.build`, and macOS metadata entries. It
-never invokes SwiftPM, Xcode, or a private source checkout; the precompiled
-validation executable owns model preload, local phrase synthesis, phrase WER,
-and no-audio checks.
+The public parser requires exactly six phrase records in the shown cold/warm
+order, parses their key/value fields independent of field order, and rejects
+duplicates, unknown fields, non-finite numbers, and unknown validation
+markers. It requires Intel to report `compute_units=cpuOnly` and Apple silicon
+to report `compute_units=cpuAndNeuralEngine`. Every phrase has positive timing
+and memory measurements; both `total_seconds` and `final_latency_seconds` must
+be <= 5 seconds, WER must be <= 0.35, silence must report `no_audio` within the
+same latency gate, and cancellation must leave a ready fresh session with a
+passing WER (and a passing total when emitted). The summary must report six
+gated rows with 1-second chunks and zero overlap. The workflow also rejects
+source, debug, `.git`, `.build`, and macOS metadata entries. It never invokes
+SwiftPM, Xcode, or a private source checkout; the precompiled validation
+executable owns model preload, local phrase synthesis, phrase WER, and no-audio
+checks.
 
 ## Repository boundaries
 

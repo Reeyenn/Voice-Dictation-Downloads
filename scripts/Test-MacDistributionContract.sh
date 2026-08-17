@@ -49,8 +49,24 @@ for required in \
   'parsed.fragment' \
   'exact same-repository GitHub release-asset URL' \
   'VD_MAC_VALIDATION_MODEL_PRELOAD' \
+  'VD_MAC_VALIDATION_BEGIN' \
+  'VD_MAC_VALIDATION_MODEL' \
   'VD_MAC_VALIDATION_CASE' \
   'VD_MAC_VALIDATION_SILENCE' \
+  'VD_MAC_VALIDATION_CANCEL' \
+  'parse_validation_log' \
+  '--parse-validation-log' \
+  'compute_units' \
+  'encoder_precision' \
+  'streaming_70_13_13' \
+  'session_load_seconds' \
+  'final_latency_seconds' \
+  'total_seconds' \
+  'rss_megabytes' \
+  'fresh_session' \
+  'fresh_wer' \
+  'streaming_chunk_seconds' \
+  'streaming_overlap_seconds' \
   'assert_universal2' \
   'codesign --verify --deep --strict'; do
   require_text "$VALIDATOR" "$required"
@@ -67,6 +83,84 @@ require_text "$VALIDATOR" 'ps -axo pid,ppid,comm,args'
 require_text "$VALIDATOR" 'tail -n 40 "$launch_log"'
 require_text "$VALIDATOR" 'redact_diagnostics'
 require_text "$VALIDATOR" 'Complete the source-free validation bundle before launching the app.'
+
+python3 - "$VALIDATOR" <<'PY'
+import subprocess
+import sys
+import tempfile
+
+validator = sys.argv[1]
+encoder_file = "parakeet_unified_encoder_streaming_70_13_13_int8.mlmodelc"
+labels = ["cold-0", "warm-0", "cold-1", "warm-1", "cold-2", "warm-2"]
+
+def valid_log(architecture):
+    compute_units = "cpuOnly" if architecture == "x86_64" else "cpuAndNeuralEngine"
+    lines = [
+        "diagnostic output before markers",
+        f"VD_MAC_VALIDATION_BEGIN model=streaming_70_13_13 encoder_precision=streaming_int8 compute_units={compute_units} architecture={architecture}",
+        "VD_MAC_VALIDATION_MODEL_PRELOAD cache=compiled mode=streaming seconds=0.500",
+        f"VD_MAC_VALIDATION_MODEL encoder_file={encoder_file}",
+    ]
+    for label in labels:
+        lines.append(
+            f"VD_MAC_VALIDATION_CASE wer=0.000 rss_megabytes=300.000 total_seconds=0.300 "
+            f"final_latency_seconds=0.200 latency_seconds=0.100 session_load_seconds=0.200 "
+            f"audio_seconds=1.000 label={label}"
+        )
+    lines.extend(
+        [
+            "VD_MAC_VALIDATION_SILENCE latency_seconds=0.010 result=no_audio",
+            "VD_MAC_VALIDATION_CANCEL total_seconds=0.400 fresh_wer=0.000 fresh_session=ready result=cancelled",
+            "VD_MAC_VALIDATION_SUMMARY streaming_overlap_seconds=0 streaming_chunk_seconds=1 max_wer=0.35 max_latency_seconds=5.000 gated_rows=6 status=pass",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+def assert_parser(log, architecture, expected_success):
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8") as handle:
+        handle.write(log)
+        handle.flush()
+        result = subprocess.run(
+            [validator, "--parse-validation-log", handle.name, architecture],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    actual_success = result.returncode == 0
+    if actual_success != expected_success:
+        detail = (result.stdout + result.stderr).strip()
+        raise SystemExit(
+            f"parser fixture expected success={expected_success}, got {actual_success}: {detail}"
+        )
+
+for architecture in ("x86_64", "arm64"):
+    assert_parser(valid_log(architecture), architecture, True)
+
+base = valid_log("x86_64")
+negative_fixtures = {
+    "duplicate label": base.replace("label=cold-2", "label=warm-2", 1),
+    "missing case": "\n".join(line for line in base.splitlines() if "label=warm-2" not in line) + "\n",
+    "unknown marker": base.replace("VD_MAC_VALIDATION_MODEL encoder_file", "VD_MAC_VALIDATION_UNKNOWN encoder_file", 1),
+    "extra field": base.replace("audio_seconds=1.000 label=cold-0", "audio_seconds=1.000 extra=1 label=cold-0", 1),
+    "wrong compute units": base.replace("compute_units=cpuOnly", "compute_units=cpuAndNeuralEngine", 1),
+    "wrong encoder precision": base.replace("encoder_precision=streaming_int8", "encoder_precision=fp16", 1),
+    "wrong model": base.replace("model=streaming_70_13_13", "model=offline", 1),
+    "missing WER": base.replace(" fresh_wer=0.000", "", 1),
+    "duplicate key": base.replace("wer=0.000 rss_megabytes", "wer=0.000 wer=0.000 rss_megabytes", 1),
+    "non-finite RSS": base.replace("rss_megabytes=300.000", "rss_megabytes=NaN", 1),
+    "negative timing": base.replace("session_load_seconds=0.200", "session_load_seconds=-0.001", 1),
+    "total gate": base.replace("total_seconds=0.300", "total_seconds=5.001", 1),
+    "final latency gate": base.replace("final_latency_seconds=0.200", "final_latency_seconds=5.001", 1),
+    "wrong silence": base.replace("result=no_audio", "result=audio", 1),
+    "silence latency gate": base.replace("VD_MAC_VALIDATION_SILENCE latency_seconds=0.010", "VD_MAC_VALIDATION_SILENCE latency_seconds=5.001", 1),
+    "wrong cancellation": base.replace("fresh_session=ready", "fresh_session=stale", 1),
+    "wrong streaming overlap": base.replace("streaming_overlap_seconds=0", "streaming_overlap_seconds=1", 1),
+}
+for name, fixture in negative_fixtures.items():
+    assert_parser(fixture, "x86_64", False)
+
+print("macOS streaming validation parser mock fixtures passed")
+PY
 
 python3 - "$VALIDATOR" <<'PY'
 from pathlib import Path
@@ -168,7 +262,7 @@ lsof_line="$(grep -n 'lsof -t -a -d txt -- \"\$APP_MAIN\"' "$VALIDATOR" | head -
 diagnostics_line="$(grep -n '^[[:space:]]*show_launch_diagnostics$' "$VALIDATOR" | head -n 1 | cut -d: -f1)"
 cleanup_line="$(grep -n 'kill \"\$app_pid\"' "$VALIDATOR" | head -n 1 | cut -d: -f1)"
 runner_line="$(grep -n 'run-mac-validation\.sh.*--max-latency-seconds' "$VALIDATOR" | head -n 1 | cut -d: -f1)"
-marker_parse_line="$(grep -n '^python3 - \"\$validation_log\"' "$VALIDATOR" | head -n 1 | cut -d: -f1)"
+marker_parse_line="$(grep -n '^parse_validation_log \"\$validation_log\"' "$VALIDATOR" | head -n 1 | cut -d: -f1)"
 if [[ -z "$scrub_line" || -z "$open_line" || -z "$lsof_line" || -z "$diagnostics_line" || -z "$cleanup_line" || -z "$runner_line" || -z "$marker_parse_line" || \
       "$scrub_line" -ge "$runner_line" || "$runner_line" -ge "$marker_parse_line" || \
       "$marker_parse_line" -ge "$open_line" || \
