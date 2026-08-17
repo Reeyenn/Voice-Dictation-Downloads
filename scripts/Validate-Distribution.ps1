@@ -1199,7 +1199,7 @@ if ($Mode -eq 'Package') {
     if (-not [string]::IsNullOrWhiteSpace($Arm64PortableAssetName)) {
         Assert-AssetName $Arm64PortableAssetName 'ARM64 portable' $Version
         if ($Arm64PortableAssetName -cne "Voice-Dictation-Windows-arm64-$Version-Portable.zip") {
-            Fail 'ARM64 portable asset must use the exact versioned v0.8 name.'
+            Fail 'ARM64 portable asset must use the exact asset name for the selected version.'
         }
     }
 } elseif ([string]::IsNullOrWhiteSpace($CandidateRoot)) {

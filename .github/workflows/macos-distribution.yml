@@ -3,8 +3,8 @@ name: macOS distribution validation
 on:
   workflow_dispatch:
     inputs:
-      version: { description: "Release version", required: true, default: 0.8.0, type: string }
-      bootstrap_release_tag: { description: "Draft bootstrap-v<version> tag", required: true, default: bootstrap-v0.8.0, type: string }
+      version: { description: "Release version", required: true, default: 0.9.0, type: string }
+      bootstrap_release_tag: { description: "Draft bootstrap-v<version> tag", required: true, default: bootstrap-v0.9.0, type: string }
       app_zip_sha256: { description: "macOS app ZIP SHA-256", required: true, type: string }
       validation_bundle_sha256: { description: "macOS validation bundle SHA-256", required: true, type: string }
 
