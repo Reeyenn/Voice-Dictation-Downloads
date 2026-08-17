@@ -51,6 +51,9 @@ for required in \
   'VD_MAC_VALIDATION_MODEL_PRELOAD' \
   'VD_MAC_VALIDATION_CASE' \
   'VD_MAC_VALIDATION_SILENCE' \
+  'compute_units=' \
+  'cpuAndGPU' \
+  'cpuAndNeuralEngine' \
   'assert_universal2' \
   'codesign --verify --deep --strict'; do
   require_text "$VALIDATOR" "$required"
@@ -128,6 +131,62 @@ for url, expected in fixtures.items():
     if actual != expected:
         raise SystemExit(f'asset URL fixture mismatch for {url!r}: expected {expected}, got {actual}')
 print('macOS exact same-repository asset URL fixtures passed')
+PY
+
+python3 - "$VALIDATOR" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+validator = Path(sys.argv[1]).read_text(encoding='utf-8')
+for marker in (
+    "compute_units_by_architecture = {",
+    "'x86_64': 'cpuAndGPU',",
+    "'arm64': 'cpuAndNeuralEngine',",
+    "begin.group('compute_units')",
+    "validation reported unsupported architecture",
+):
+    if marker not in validator:
+        raise SystemExit(f'validator is missing compute-policy marker: {marker}')
+
+begin_pattern = re.compile(
+    r'VD_MAC_VALIDATION_BEGIN\s+architecture=(?P<architecture>[^\s]+)\s+'
+    r'compute_units=(?P<compute_units>[^\s]+)'
+)
+compute_units_by_architecture = {
+    'x86_64': 'cpuAndGPU',
+    'arm64': 'cpuAndNeuralEngine',
+}
+
+def accepted(marker: str, expected_architecture: str) -> bool:
+    begin = begin_pattern.search(marker)
+    if begin is None or expected_architecture not in compute_units_by_architecture:
+        return False
+    architecture = begin.group('architecture')
+    compute_units = begin.group('compute_units')
+    return (
+        architecture in compute_units_by_architecture
+        and architecture == expected_architecture
+        and compute_units == compute_units_by_architecture[expected_architecture]
+    )
+
+fixtures = {
+    'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuAndGPU': ('x86_64', True),
+    'VD_MAC_VALIDATION_BEGIN architecture=arm64 compute_units=cpuAndNeuralEngine': ('arm64', True),
+    'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuOnly': ('x86_64', False),
+    'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuAndNeuralEngine': ('x86_64', False),
+    'VD_MAC_VALIDATION_BEGIN architecture=arm64 compute_units=cpuAndGPU': ('arm64', False),
+    'VD_MAC_VALIDATION_BEGIN architecture=x86_64': ('x86_64', False),
+    'VD_MAC_VALIDATION_BEGIN architecture=powerpc64 compute_units=cpuAndGPU': ('powerpc64', False),
+}
+for marker, (expected_architecture, expected) in fixtures.items():
+    actual = accepted(marker, expected_architecture)
+    if actual != expected:
+        raise SystemExit(
+            f'compute-policy fixture mismatch for {marker!r}: '
+            f'expected {expected}, got {actual}'
+        )
+print('macOS architecture-specific compute-policy fixtures passed')
 PY
 
 download_start="$(grep -n '^download_asset()' "$VALIDATOR" | head -n 1 | cut -d: -f1)"
