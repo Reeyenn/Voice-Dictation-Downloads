@@ -4,6 +4,11 @@ $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 function Read([string]$path) { Get-Content -LiteralPath (Join-Path $root $path) -Raw }
 function Has([string]$text,[string]$needle,[string]$label) { if (-not $text.Contains($needle)) { throw "$label missing: $needle" } }
+function HasWhitespaceNormalized([string]$text,[string]$needle,[string]$label) {
+    $normalizedText = [regex]::Replace($text, '\s+', ' ').Trim()
+    $normalizedNeedle = [regex]::Replace($needle, '\s+', ' ').Trim()
+    if (-not $normalizedText.Contains($normalizedNeedle)) { throw "$label missing (whitespace-normalized): $needle" }
+}
 function Lacks([string]$text,[string]$needle,[string]$label) { if ($text.Contains($needle)) { throw "$label contains forbidden: $needle" } }
 $workflow = Read '.github\workflows\windows-distribution.yml'
 $macWorkflow = Read '.github\workflows\macos-distribution.yml'
@@ -108,7 +113,11 @@ foreach ($needle in @('function Wait-ForInstallRootRemoval','Wait-ForInstallRoot
 if ([regex]::Matches($validator, 'Wait-ForInstallRootRemoval \$').Count -ne 4) {
     throw 'Each native installer smoke uninstall must wait for its isolated install root to disappear.'
 }
-foreach ($needle in @('Windows 10 22H2 x64/ARM64','Windows 11 x64/ARM64','windows-11-arm','windows-2025','0.8.0','0.9.0','does not accept arbitrary asset-name inputs','x64_portable_sha256','arm64_portable_sha256')) { Has $readme $needle 'README' }
+foreach ($needle in @('Windows 10 22H2 x64/ARM64','Windows 11 x64/ARM64','windows-11-arm','windows-2025','0.8.0','0.9.0','x64_portable_sha256','arm64_portable_sha256')) { Has $readme $needle 'README' }
+# Preserve the exact contract while allowing the sentence to wrap across lines.
+# This guards the failure mode where README formatting inserts a newline inside
+# the phrase without allowing altered wording to satisfy the check.
+HasWhitespaceNormalized $readme 'does not accept arbitrary asset-name inputs' 'README'
 foreach ($needle in @('Windows Server 2022 x64 build 20348','validator machine-readable')) { Has $readme $needle 'README' }
 Lacks $readme "worker's machine-readable" 'README'
 Lacks $readme 'Windows on ARM64' 'README'
