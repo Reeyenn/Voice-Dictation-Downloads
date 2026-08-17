@@ -57,11 +57,18 @@ for required in \
   'parse_validation_log' \
   '--parse-validation-log' \
   'compute_units' \
+  'cpuAndGPU' \
+  'cpuAndNeuralEngine' \
   'encoder_precision' \
+  'streaming_fp16' \
+  'streaming_int8' \
   'streaming_70_13_13' \
+  'parakeet_unified_encoder_streaming_70_13_13.mlmodelc' \
+  'parakeet_unified_encoder_streaming_70_13_13_int8.mlmodelc' \
   'session_load_seconds' \
-  'final_latency_seconds' \
-  'total_seconds' \
+  'processing_seconds' \
+  'final_model_seconds' \
+  'post_stop_seconds' \
   'rss_megabytes' \
   'fresh_session' \
   'fresh_wer' \
@@ -90,27 +97,33 @@ import sys
 import tempfile
 
 validator = sys.argv[1]
-encoder_file = "parakeet_unified_encoder_streaming_70_13_13_int8.mlmodelc"
 labels = ["cold-0", "warm-0", "cold-1", "warm-1", "cold-2", "warm-2"]
 
 def valid_log(architecture):
-    compute_units = "cpuOnly" if architecture == "x86_64" else "cpuAndNeuralEngine"
+    intel = architecture == "x86_64"
+    compute_units = "cpuAndGPU" if intel else "cpuAndNeuralEngine"
+    encoder_precision = "streaming_fp16" if intel else "streaming_int8"
+    encoder_file = (
+        "parakeet_unified_encoder_streaming_70_13_13.mlmodelc"
+        if intel
+        else "parakeet_unified_encoder_streaming_70_13_13_int8.mlmodelc"
+    )
     lines = [
         "diagnostic output before markers",
-        f"VD_MAC_VALIDATION_BEGIN model=streaming_70_13_13 encoder_precision=streaming_int8 compute_units={compute_units} architecture={architecture}",
+        f"VD_MAC_VALIDATION_BEGIN model=streaming_70_13_13 encoder_precision={encoder_precision} compute_units={compute_units} architecture={architecture}",
         "VD_MAC_VALIDATION_MODEL_PRELOAD cache=compiled mode=streaming seconds=0.500",
         f"VD_MAC_VALIDATION_MODEL encoder_file={encoder_file}",
     ]
     for label in labels:
         lines.append(
-            f"VD_MAC_VALIDATION_CASE wer=0.000 rss_megabytes=300.000 total_seconds=0.300 "
-            f"final_latency_seconds=0.200 latency_seconds=0.100 session_load_seconds=0.200 "
+            f"VD_MAC_VALIDATION_CASE wer=0.000 rss_megabytes=300.000 post_stop_seconds=0.300 "
+            f"final_model_seconds=0.200 processing_seconds=0.100 session_load_seconds=0.200 "
             f"audio_seconds=1.000 label={label}"
         )
     lines.extend(
         [
             "VD_MAC_VALIDATION_SILENCE latency_seconds=0.010 result=no_audio",
-            "VD_MAC_VALIDATION_CANCEL total_seconds=0.400 fresh_wer=0.000 fresh_session=ready result=cancelled",
+            "VD_MAC_VALIDATION_CANCEL post_stop_seconds=0.400 fresh_wer=0.000 fresh_session=ready result=cancelled",
             "VD_MAC_VALIDATION_SUMMARY streaming_overlap_seconds=0 streaming_chunk_seconds=1 max_wer=0.35 max_latency_seconds=5.000 gated_rows=6 status=pass",
         ]
     )
@@ -142,15 +155,18 @@ negative_fixtures = {
     "missing case": "\n".join(line for line in base.splitlines() if "label=warm-2" not in line) + "\n",
     "unknown marker": base.replace("VD_MAC_VALIDATION_MODEL encoder_file", "VD_MAC_VALIDATION_UNKNOWN encoder_file", 1),
     "extra field": base.replace("audio_seconds=1.000 label=cold-0", "audio_seconds=1.000 extra=1 label=cold-0", 1),
-    "wrong compute units": base.replace("compute_units=cpuOnly", "compute_units=cpuAndNeuralEngine", 1),
-    "wrong encoder precision": base.replace("encoder_precision=streaming_int8", "encoder_precision=fp16", 1),
+    "wrong compute units": base.replace("compute_units=cpuAndGPU", "compute_units=cpuOnly", 1),
+    "wrong encoder precision": base.replace("encoder_precision=streaming_fp16", "encoder_precision=streaming_int8", 1),
     "wrong model": base.replace("model=streaming_70_13_13", "model=offline", 1),
+    "wrong encoder": base.replace("parakeet_unified_encoder_streaming_70_13_13.mlmodelc", "parakeet_unified_encoder_streaming_70_13_13_int8.mlmodelc", 1),
     "missing WER": base.replace(" fresh_wer=0.000", "", 1),
     "duplicate key": base.replace("wer=0.000 rss_megabytes", "wer=0.000 wer=0.000 rss_megabytes", 1),
     "non-finite RSS": base.replace("rss_megabytes=300.000", "rss_megabytes=NaN", 1),
     "negative timing": base.replace("session_load_seconds=0.200", "session_load_seconds=-0.001", 1),
-    "total gate": base.replace("total_seconds=0.300", "total_seconds=5.001", 1),
-    "final latency gate": base.replace("final_latency_seconds=0.200", "final_latency_seconds=5.001", 1),
+    "session load gate": base.replace("session_load_seconds=0.200", "session_load_seconds=5.001", 1),
+    "non-finite processing": base.replace("processing_seconds=0.100", "processing_seconds=Infinity", 1),
+    "negative processing": base.replace("processing_seconds=0.100", "processing_seconds=-0.001", 1),
+    "post-stop gate": base.replace("post_stop_seconds=0.300", "post_stop_seconds=5.001", 1),
     "wrong silence": base.replace("result=no_audio", "result=audio", 1),
     "silence latency gate": base.replace("VD_MAC_VALIDATION_SILENCE latency_seconds=0.010", "VD_MAC_VALIDATION_SILENCE latency_seconds=5.001", 1),
     "wrong cancellation": base.replace("fresh_session=ready", "fresh_session=stale", 1),
@@ -158,6 +174,14 @@ negative_fixtures = {
 }
 for name, fixture in negative_fixtures.items():
     assert_parser(fixture, "x86_64", False)
+
+arm_base = valid_log("arm64")
+for name, fixture in {
+    "arm wrong compute units": arm_base.replace("compute_units=cpuAndNeuralEngine", "compute_units=cpuAndGPU", 1),
+    "arm wrong precision": arm_base.replace("encoder_precision=streaming_int8", "encoder_precision=streaming_fp16", 1),
+    "arm wrong encoder": arm_base.replace("parakeet_unified_encoder_streaming_70_13_13_int8.mlmodelc", "parakeet_unified_encoder_streaming_70_13_13.mlmodelc", 1),
+}.items():
+    assert_parser(fixture, "arm64", False)
 
 print("macOS streaming validation parser mock fixtures passed")
 PY
