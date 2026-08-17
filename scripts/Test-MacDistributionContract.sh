@@ -60,6 +60,12 @@ require_text "$VALIDATOR" 'unset GITHUB_TOKEN GH_TOKEN'
 require_text "$VALIDATOR" 'TOKEN AUTH_HEADER'
 require_text "$VALIDATOR" "(cd \"\$VALIDATION_DIR\" && ./run-mac-validation.sh"
 require_text "$VALIDATOR" 'PIPESTATUS[0]'
+require_text "$VALIDATOR" 'for tool in curl python3 unzip shasum plutil codesign lipo file open lsof; do'
+require_text "$VALIDATOR" 'open -n "$APP_PATH"'
+require_text "$VALIDATOR" 'lsof -t -a -d txt -- "$APP_MAIN"'
+require_text "$VALIDATOR" 'ps -axo pid,ppid,comm,args'
+require_text "$VALIDATOR" 'tail -n 40 "$launch_log"'
+require_text "$VALIDATOR" 'redact_diagnostics'
 
 python3 - "$VALIDATOR" <<'PY'
 from pathlib import Path
@@ -151,12 +157,21 @@ fi
 if grep -Fq "&& \"\$VALIDATION_EXE\"" "$VALIDATOR"; then
   fail 'macOS validator must not execute the validation binary outside its packaged launcher'
 fi
+if grep -Eiq '(^|[[:space:];|])pgrep([[:space:]]|$)|open[[:space:]]+-W|^[[:space:]]*"\$APP_MAIN"[[:space:]]' "$VALIDATOR"; then
+  fail 'macOS app launch validation must use LaunchServices plus exact lsof PIDs only'
+fi
 
 scrub_line="$(grep -n '^clear_workflow_tokens$' "$VALIDATOR" | tail -n 1 | cut -d: -f1)"
 open_line="$(grep -n '^open -n ' "$VALIDATOR" | head -n 1 | cut -d: -f1)"
+lsof_line="$(grep -n 'lsof -t -a -d txt -- \"\$APP_MAIN\"' "$VALIDATOR" | head -n 1 | cut -d: -f1)"
+diagnostics_line="$(grep -n '^[[:space:]]*show_launch_diagnostics$' "$VALIDATOR" | head -n 1 | cut -d: -f1)"
+cleanup_line="$(grep -n 'kill \"\$app_pid\"' "$VALIDATOR" | head -n 1 | cut -d: -f1)"
 runner_line="$(grep -n 'run-mac-validation\.sh.*--max-latency-seconds' "$VALIDATOR" | head -n 1 | cut -d: -f1)"
-if [[ -z "$scrub_line" || -z "$open_line" || -z "$runner_line" || "$scrub_line" -ge "$open_line" || "$scrub_line" -ge "$runner_line" ]]; then
-  fail 'token scrub must occur after downloads and before app or validator launch'
+if [[ -z "$scrub_line" || -z "$open_line" || -z "$lsof_line" || -z "$diagnostics_line" || -z "$cleanup_line" || -z "$runner_line" || \
+      "$scrub_line" -ge "$open_line" || "$scrub_line" -ge "$runner_line" || \
+      "$open_line" -ge "$lsof_line" || "$lsof_line" -ge "$diagnostics_line" || \
+      "$diagnostics_line" -ge "$cleanup_line" || "$cleanup_line" -ge "$runner_line" ]]; then
+  fail 'token scrub, exact PID launch check, diagnostics, cleanup, and validator launch are out of order'
 fi
 
 bash -n "$VALIDATOR"
