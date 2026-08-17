@@ -294,38 +294,9 @@ done < <(find "$SPARKLE_ROOT" -type f -print0)
 
 codesign --verify --deep --strict --verbose=2 "$APP_PATH" >/dev/null 2>&1 || fail 'app code signature verification failed'
 
-launch_log="$WORK_ROOT/app-launch.log"
-redact_diagnostics() {
-  sed -E \
-    -e 's/(Bearer[[:space:]]+)[^[:space:]]+/\1[REDACTED]/g' \
-    -e 's/((GITHUB_TOKEN|GH_TOKEN|GITHUB_API_TOKEN|ACTIONS_RUNTIME_TOKEN|RUNNER_TOKEN|TOKEN|AUTH_HEADER)=)[^[:space:]]+/\1[REDACTED]/g'
-}
-show_launch_diagnostics() {
-  {
-    echo 'LaunchServices process diagnostics:'
-    ps -axo pid,ppid,comm,args 2>/dev/null |
-      awk -v app_main="$APP_MAIN" 'index($0, app_main) { print }' |
-      head -n 20 |
-      redact_diagnostics || true
-    echo 'Recent LaunchServices output (redacted):'
-    tail -n 40 "$launch_log" 2>/dev/null | redact_diagnostics || true
-  } >&2
-}
-open -n "$APP_PATH" >"$launch_log" 2>&1 &
-open_pid=$!
-sleep 8
-app_pids="$(lsof -t -a -d txt -- "$APP_MAIN" 2>/dev/null | awk '/^[0-9]+$/ { print }' | sort -n -u || true)"
-if [[ -z "$app_pids" ]]; then
-  wait "$open_pid" 2>/dev/null || true
-  show_launch_diagnostics
-  fail 'app did not remain running after LaunchServices start; see bounded diagnostics above'
-fi
-while IFS= read -r app_pid; do
-  [[ "$app_pid" =~ ^[0-9]+$ ]] && kill "$app_pid" 2>/dev/null || true
-done <<<"$app_pids"
-wait "$open_pid" 2>/dev/null || true
-echo "macOS app launch policy and runtime start passed for $(uname -m)."
-
+# Complete the source-free validation bundle before launching the app. The app
+# can populate the shared model cache during startup; doing this first avoids
+# racing model preload and leaves a complete cache for the LaunchServices gate.
 VALIDATION_DIR="$VALIDATION_ROOT/Voice-Dictation-MacValidation"
 VALIDATION_EXE="$VALIDATION_DIR/VoiceDictationMacValidation"
 VALIDATION_RUNNER="$VALIDATION_DIR/run-mac-validation.sh"
@@ -375,5 +346,39 @@ if worst_latency > maximum_latency:
     raise SystemExit(f'synthesized phrase latency {worst_latency:.3f}s exceeds maximum {maximum_latency:.3f}s')
 print(f'Mac validation measurements: model_preload_seconds={preload_seconds:.3f} cases={len(cases)} worst_wer={worst_wer:.3f} worst_latency_seconds={worst_latency:.3f} silence=no_audio')
 PY
+
+# Exercise LaunchServices only after the validation bundle has completed and
+# populated the shared model cache.
+launch_log="$WORK_ROOT/app-launch.log"
+redact_diagnostics() {
+  sed -E \
+    -e 's/(Bearer[[:space:]]+)[^[:space:]]+/\1[REDACTED]/g' \
+    -e 's/((GITHUB_TOKEN|GH_TOKEN|GITHUB_API_TOKEN|ACTIONS_RUNTIME_TOKEN|RUNNER_TOKEN|TOKEN|AUTH_HEADER)=)[^[:space:]]+/\1[REDACTED]/g'
+}
+show_launch_diagnostics() {
+  {
+    echo 'LaunchServices process diagnostics:'
+    ps -axo pid,ppid,comm,args 2>/dev/null |
+      awk -v app_main="$APP_MAIN" 'index($0, app_main) { print }' |
+      head -n 20 |
+      redact_diagnostics || true
+    echo 'Recent LaunchServices output (redacted):'
+    tail -n 40 "$launch_log" 2>/dev/null | redact_diagnostics || true
+  } >&2
+}
+open -n "$APP_PATH" >"$launch_log" 2>&1 &
+open_pid=$!
+sleep 8
+app_pids="$(lsof -t -a -d txt -- "$APP_MAIN" 2>/dev/null | awk '/^[0-9]+$/ { print }' | sort -n -u || true)"
+if [[ -z "$app_pids" ]]; then
+  wait "$open_pid" 2>/dev/null || true
+  show_launch_diagnostics
+  fail 'app did not remain running after LaunchServices start; see bounded diagnostics above'
+fi
+while IFS= read -r app_pid; do
+  [[ "$app_pid" =~ ^[0-9]+$ ]] && kill "$app_pid" 2>/dev/null || true
+done <<<"$app_pids"
+wait "$open_pid" 2>/dev/null || true
+echo "macOS app launch policy and runtime start passed for $(uname -m)."
 
 echo "Native macOS $(uname -m) binary-only validation passed for $VERSION."
