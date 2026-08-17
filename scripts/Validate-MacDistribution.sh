@@ -316,15 +316,43 @@ import sys
 
 text = open(sys.argv[1], encoding='utf-8').read()
 expected_architecture = sys.argv[2]
-begin = re.search(r'VD_MAC_VALIDATION_BEGIN\s+architecture=([^\s]+)', text)
+compute_units_by_architecture = {
+    'x86_64': 'cpuAndGPU',
+    'arm64': 'cpuAndNeuralEngine',
+}
+begin_lines = re.findall(r'(?m)^VD_MAC_VALIDATION_BEGIN[^\r\n]*$', text)
+if len(begin_lines) != 1:
+    raise SystemExit(
+        f'validation output must contain exactly one VD_MAC_VALIDATION_BEGIN line; '
+        f'found {len(begin_lines)}'
+    )
+begin = re.fullmatch(
+    r'VD_MAC_VALIDATION_BEGIN\s+architecture=(?P<architecture>[^\s]+)\s+'
+    r'compute_units=(?P<compute_units>[^\s]+)',
+    begin_lines[0],
+)
+if begin is None:
+    raise SystemExit(
+        'validation output begin marker must contain exactly architecture and compute_units'
+    )
 preload = re.search(r'VD_MAC_VALIDATION_MODEL_PRELOAD\s+seconds=([0-9]+(?:\.[0-9]+)?)', text)
 cases = re.findall(r'VD_MAC_VALIDATION_CASE\s+label=([^\s]+).*?latency_seconds=([0-9]+(?:\.[0-9]+)?)\s+wer=([0-9]+(?:\.[0-9]+)?)', text)
 silence = re.search(r'VD_MAC_VALIDATION_SILENCE\s+result=no_audio', text)
 summary = re.search(r'VD_MAC_VALIDATION_SUMMARY\s+status=pass\b', text)
-if begin is None:
-    raise SystemExit('validation output is missing native architecture')
-if begin.group(1) != expected_architecture:
-    raise SystemExit(f'validation ran as {begin.group(1)}, expected {expected_architecture}')
+reported_architecture = begin.group('architecture')
+reported_compute_units = begin.group('compute_units')
+if expected_architecture not in compute_units_by_architecture:
+    raise SystemExit(f'unsupported expected architecture: {expected_architecture}')
+if reported_architecture not in compute_units_by_architecture:
+    raise SystemExit(f'validation reported unsupported architecture: {reported_architecture}')
+if reported_architecture != expected_architecture:
+    raise SystemExit(f'validation ran as {reported_architecture}, expected {expected_architecture}')
+expected_compute_units = compute_units_by_architecture[expected_architecture]
+if reported_compute_units != expected_compute_units:
+    raise SystemExit(
+        f'validation ran with compute_units={reported_compute_units}, '
+        f'expected {expected_compute_units} for {expected_architecture}'
+    )
 if preload is None:
     raise SystemExit('validation output is missing model preload seconds')
 if len(cases) < 6:
