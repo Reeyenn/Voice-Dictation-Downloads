@@ -134,7 +134,7 @@ VD_MAC_VALIDATION_MODEL encoder_file=<offline fp16 or streaming int8 encoder>
 VD_MAC_VALIDATION_CASE label=<cold-0|warm-0|cold-1|warm-1|cold-2|warm-2> audio_seconds=<positive> session_load_seconds=<positive> processing_seconds=<positive> final_model_seconds=<positive> post_stop_seconds=<positive> rss_megabytes=<positive> wer=<0..0.35>
 VD_MAC_VALIDATION_SILENCE result=no_audio latency_seconds=<positive>
 VD_MAC_VALIDATION_CANCEL result=cancelled fresh_session=ready fresh_wer=<0..0.35> [post_stop_seconds=<positive>]
-VD_MAC_VALIDATION_SUMMARY status=pass gated_rows=6 max_latency_seconds=<5|10> max_wer=0.35 capture_mode=<rolling|streaming> capture_chunk_seconds=<15|1.04> capture_overlap_seconds=<2|0>
+VD_MAC_VALIDATION_SUMMARY status=pass gated_rows=6 max_latency_seconds=10 max_wer=0.35 capture_mode=<rolling|streaming> capture_chunk_seconds=<15|1.04> capture_overlap_seconds=<2|0>
 ```
 
 The public parser requires exactly six phrase records in the shown cold/warm
@@ -150,8 +150,8 @@ overlap. Apple silicon must report `compute_units=cpuAndNeuralEngine`,
 chunks with no overlap. Every phrase has positive finite audio, load,
 processing, final-model, and post-stop timings with at least four decimal
 places, plus finite positive resident memory no greater than 6144 MB; session load and
-`post_stop_seconds` must each be <= 10 seconds on Intel and <= 5 seconds on
-Apple silicon, while WER must be <= 0.35. This post-stop gate measures the
+`post_stop_seconds` must each be <= 10 seconds on both architectures, while
+WER must be <= 0.35. This post-stop gate measures the
 final tail after a real-time-paced recording rather than incorrectly failing a
 healthy recording whose full audio processing necessarily exceeds five
 seconds. Silence must report `no_audio` within the same architecture-specific

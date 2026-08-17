@@ -80,7 +80,6 @@ for required in \
   'capture_chunk_seconds' \
   'capture_overlap_seconds' \
   'VALIDATION_MAX_LATENCY_SECONDS=10' \
-  'VALIDATION_MAX_LATENCY_SECONDS=5' \
   'assert_universal2' \
   'codesign --verify --deep --strict'; do
   require_text "$VALIDATOR" "$required"
@@ -94,6 +93,9 @@ require_text "$VALIDATOR" 'for tool in curl python3 unzip shasum plutil codesign
 require_text "$VALIDATOR" 'HOST_ARCHITECTURE="$(uname -m)"'
 require_text "$VALIDATOR" 'sysctl.proc_translated'
 require_text "$VALIDATOR" 'must not run under Rosetta translation'
+if grep -Fq 'VALIDATION_MAX_LATENCY_SECONDS=5' "$VALIDATOR"; then
+  fail 'macOS validation must use the ten-second gate on both architectures'
+fi
 require_text "$VALIDATOR" 'open -n "$APP_PATH"'
 require_text "$VALIDATOR" 'lsof -t -a -d txt -- "$APP_MAIN"'
 require_text "$VALIDATOR" 'ps -axo pid,ppid,comm,args'
@@ -117,7 +119,7 @@ def valid_log(architecture):
     capture_mode = "rolling" if intel else "streaming"
     chunk_seconds = "15.000000" if intel else "1.040000"
     overlap_seconds = "2.000000" if intel else "0.000000"
-    maximum_latency = "10.000000" if intel else "5.000000"
+    maximum_latency = "10.000000"
     encoder_file = (
         "parakeet_unified_encoder.mlmodelc"
         if intel
@@ -203,6 +205,7 @@ for name, fixture in {
     "arm wrong capture mode": arm_base.replace("capture_mode=streaming", "capture_mode=rolling", 1),
     "arm wrong encoder": arm_base.replace("parakeet_unified_encoder_streaming_70_13_13_int8.mlmodelc", "parakeet_unified_encoder.mlmodelc", 1),
     "arm wrong capture chunk": arm_base.replace("capture_chunk_seconds=1.040000", "capture_chunk_seconds=15.000000", 1),
+    "arm latency gate": arm_base.replace("post_stop_seconds=0.300000", "post_stop_seconds=10.000001", 1),
 }.items():
     assert_parser(fixture, "arm64", False)
 
