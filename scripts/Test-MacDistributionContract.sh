@@ -49,11 +49,39 @@ for required in \
   'parsed.fragment' \
   'exact same-repository GitHub release-asset URL' \
   'VD_MAC_VALIDATION_MODEL_PRELOAD' \
+  'VD_MAC_VALIDATION_BEGIN' \
+  'VD_MAC_VALIDATION_MODEL' \
+  'VD_MAC_VALIDATION_GEOMETRY' \
   'VD_MAC_VALIDATION_CASE' \
   'VD_MAC_VALIDATION_SILENCE' \
-  'compute_units=' \
+  'VD_MAC_VALIDATION_CANCEL' \
+  'parse_validation_log' \
+  '--parse-validation-log' \
+  'compute_units' \
   'cpuAndGPU' \
   'cpuAndNeuralEngine' \
+  'encoder_precision' \
+  'fp16' \
+  'streaming_int8' \
+  'capture_mode' \
+  'rolling' \
+  'streaming_70_13_13' \
+  'offline_15_2' \
+  'parakeet_unified_encoder.mlmodelc' \
+  'parakeet_unified_encoder_streaming_70_13_13_int8.mlmodelc' \
+  'session_load_seconds' \
+  'processing_seconds' \
+  'final_model_seconds' \
+  'post_stop_seconds' \
+  'rss_megabytes' \
+  'maximum_rss_megabytes' \
+  'at least four decimal places' \
+  'fresh_session' \
+  'fresh_wer' \
+  'capture_chunk_seconds' \
+  'capture_overlap_seconds' \
+  'VALIDATION_MAX_LATENCY_SECONDS=20' \
+  'VALIDATION_MAX_LATENCY_SECONDS=12' \
   'assert_universal2' \
   'codesign --verify --deep --strict'; do
   require_text "$VALIDATOR" "$required"
@@ -63,13 +91,136 @@ require_text "$VALIDATOR" 'unset GITHUB_TOKEN GH_TOKEN'
 require_text "$VALIDATOR" 'TOKEN AUTH_HEADER'
 require_text "$VALIDATOR" "(cd \"\$VALIDATION_DIR\" && ./run-mac-validation.sh"
 require_text "$VALIDATOR" 'PIPESTATUS[0]'
-require_text "$VALIDATOR" 'for tool in curl python3 unzip shasum plutil codesign lipo file open lsof; do'
+require_text "$VALIDATOR" 'for tool in curl python3 unzip shasum plutil codesign lipo file open lsof sysctl; do'
+require_text "$VALIDATOR" 'HOST_ARCHITECTURE="$(uname -m)"'
+require_text "$VALIDATOR" 'sysctl.proc_translated'
+require_text "$VALIDATOR" 'must not run under Rosetta translation'
+if grep -Fq 'VALIDATION_MAX_LATENCY_SECONDS=5' "$VALIDATOR"; then
+  fail 'macOS validation must not use the old five-second gate'
+fi
 require_text "$VALIDATOR" 'open -n "$APP_PATH"'
 require_text "$VALIDATOR" 'lsof -t -a -d txt -- "$APP_MAIN"'
 require_text "$VALIDATOR" 'ps -axo pid,ppid,comm,args'
 require_text "$VALIDATOR" 'tail -n 40 "$launch_log"'
 require_text "$VALIDATOR" 'redact_diagnostics'
 require_text "$VALIDATOR" 'Complete the source-free validation bundle before launching the app.'
+
+python3 - "$VALIDATOR" <<'PY'
+import subprocess
+import sys
+import tempfile
+
+validator = sys.argv[1]
+labels = ["cold-0", "warm-0", "cold-1", "warm-1", "cold-2", "warm-2"]
+
+def valid_log(architecture):
+    intel = architecture == "x86_64"
+    compute_units = "cpuAndGPU" if intel else "cpuAndNeuralEngine"
+    encoder_precision = "fp16" if intel else "streaming_int8"
+    model = "offline_15_2" if intel else "streaming_70_13_13"
+    capture_mode = "rolling" if intel else "streaming"
+    chunk_seconds = "15.000000" if intel else "1.040000"
+    overlap_seconds = "2.000000" if intel else "0.000000"
+    maximum_latency = "20.000000" if intel else "12.000000"
+    encoder_file = (
+        "parakeet_unified_encoder.mlmodelc"
+        if intel
+        else "parakeet_unified_encoder_streaming_70_13_13_int8.mlmodelc"
+    )
+    lines = [
+        "diagnostic output before markers",
+        f"VD_MAC_VALIDATION_BEGIN model={model} capture_mode={capture_mode} encoder_precision={encoder_precision} compute_units={compute_units} architecture={architecture}",
+        f"VD_MAC_VALIDATION_MODEL_PRELOAD cache=compiled mode={capture_mode} seconds=0.500000",
+        f"VD_MAC_VALIDATION_MODEL encoder_file={encoder_file}",
+        f"VD_MAC_VALIDATION_GEOMETRY architecture={architecture} window_seconds={chunk_seconds} overlap_seconds={overlap_seconds} complete_windows={'1' if intel else '16'} final_start_seconds={'13.000000' if intel else '16.640000'} final_duration_seconds={'3.976000' if intel else '0.336000'}",
+    ]
+    for label in labels:
+        audio_seconds = "16.976000" if label.endswith("-2") else "1.000000"
+        lines.append(
+            f"VD_MAC_VALIDATION_CASE wer=0.000000 rss_megabytes=1024.000000 post_stop_seconds=0.300000 "
+            f"final_model_seconds=0.200000 processing_seconds=0.100000 session_load_seconds=0.200000 "
+            f"audio_seconds={audio_seconds} label={label}"
+        )
+    lines.extend(
+        [
+            "VD_MAC_VALIDATION_SILENCE latency_seconds=0.010000 result=no_audio",
+            "VD_MAC_VALIDATION_CANCEL post_stop_seconds=0.400000 fresh_wer=0.000000 fresh_session=ready result=cancelled",
+            f"VD_MAC_VALIDATION_SUMMARY capture_mode={capture_mode} capture_overlap_seconds={overlap_seconds} capture_chunk_seconds={chunk_seconds} max_wer=0.35 max_latency_seconds={maximum_latency} gated_rows=6 status=pass",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+def assert_parser(log, architecture, expected_success):
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8") as handle:
+        handle.write(log)
+        handle.flush()
+        result = subprocess.run(
+            [validator, "--parse-validation-log", handle.name, architecture],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    actual_success = result.returncode == 0
+    if actual_success != expected_success:
+        detail = (result.stdout + result.stderr).strip()
+        raise SystemExit(
+            f"parser fixture expected success={expected_success}, got {actual_success}: {detail}"
+        )
+
+for architecture in ("x86_64", "arm64"):
+    assert_parser(valid_log(architecture), architecture, True)
+
+base = valid_log("x86_64")
+negative_fixtures = {
+    "duplicate label": base.replace("label=cold-2", "label=warm-2", 1),
+    "missing case": "\n".join(line for line in base.splitlines() if "label=warm-2" not in line) + "\n",
+    "unknown marker": base.replace("VD_MAC_VALIDATION_MODEL encoder_file", "VD_MAC_VALIDATION_UNKNOWN encoder_file", 1),
+    "extra field": base.replace("audio_seconds=1.000000 label=cold-0", "audio_seconds=1.000000 extra=1 label=cold-0", 1),
+    "wrong compute units": base.replace("compute_units=cpuAndGPU", "compute_units=cpuOnly", 1),
+    "wrong encoder precision": base.replace("encoder_precision=fp16", "encoder_precision=streaming_int8", 1),
+    "wrong model": base.replace("model=offline_15_2", "model=offline", 1),
+    "wrong capture mode": base.replace("capture_mode=rolling", "capture_mode=streaming", 1),
+    "wrong encoder": base.replace("parakeet_unified_encoder.mlmodelc", "parakeet_unified_encoder_streaming_70_13_13_int8.mlmodelc", 1),
+    "wrong Intel geometry start": base.replace("final_start_seconds=13.000000", "final_start_seconds=14.000000", 1),
+    "missing WER": base.replace(" fresh_wer=0.000000", "", 1),
+    "duplicate key": base.replace("wer=0.000000 rss_megabytes", "wer=0.000000 wer=0.000000 rss_megabytes", 1),
+    "non-finite RSS": base.replace("rss_megabytes=1024.000000", "rss_megabytes=NaN", 1),
+    "zero RSS": base.replace("rss_megabytes=1024.000000", "rss_megabytes=0.000000", 1),
+    "high RSS": base.replace("rss_megabytes=1024.000000", "rss_megabytes=6144.000001", 1),
+    "low precision timing": base.replace("session_load_seconds=0.200000", "session_load_seconds=0.200", 1),
+    "negative timing": base.replace("session_load_seconds=0.200000", "session_load_seconds=-0.001000", 1),
+    "session load gate": base.replace("session_load_seconds=0.200000", "session_load_seconds=20.000001", 1),
+    "non-finite processing": base.replace("processing_seconds=0.100000", "processing_seconds=Infinity", 1),
+    "negative processing": base.replace("processing_seconds=0.100000", "processing_seconds=-0.001000", 1),
+    "post-stop gate": base.replace("post_stop_seconds=0.300000", "post_stop_seconds=20.000001", 1),
+    "wrong silence": base.replace("result=no_audio", "result=audio", 1),
+    "silence latency gate": base.replace("VD_MAC_VALIDATION_SILENCE latency_seconds=0.010000", "VD_MAC_VALIDATION_SILENCE latency_seconds=20.000001", 1),
+    "intel generic ten-second summary": base.replace("max_latency_seconds=20.000000", "max_latency_seconds=10.000000", 1),
+    "wrong cancellation": base.replace("fresh_session=ready", "fresh_session=stale", 1),
+    "wrong capture overlap": base.replace("capture_overlap_seconds=2.000000", "capture_overlap_seconds=1.000000", 1),
+    "wrong capture chunk": base.replace("capture_chunk_seconds=15.000000", "capture_chunk_seconds=1.000000", 1),
+}
+for name, fixture in negative_fixtures.items():
+    assert_parser(fixture, "x86_64", False)
+
+arm_base = valid_log("arm64")
+for name, fixture in {
+    "arm wrong compute units": arm_base.replace("compute_units=cpuAndNeuralEngine", "compute_units=cpuAndGPU", 1),
+    "arm wrong precision": arm_base.replace("encoder_precision=streaming_int8", "encoder_precision=fp16", 1),
+    "arm wrong model": arm_base.replace("model=streaming_70_13_13", "model=offline_15_2", 1),
+    "arm wrong capture mode": arm_base.replace("capture_mode=streaming", "capture_mode=rolling", 1),
+    "arm wrong encoder": arm_base.replace("parakeet_unified_encoder_streaming_70_13_13_int8.mlmodelc", "parakeet_unified_encoder.mlmodelc", 1),
+    "arm wrong capture chunk": arm_base.replace("capture_chunk_seconds=1.040000", "capture_chunk_seconds=15.000000", 1),
+    "arm session load gate": arm_base.replace("session_load_seconds=0.200000", "session_load_seconds=12.000001", 1),
+    "arm latency gate": arm_base.replace("post_stop_seconds=0.300000", "post_stop_seconds=12.000001", 1),
+    "arm silence latency gate": arm_base.replace("VD_MAC_VALIDATION_SILENCE latency_seconds=0.010000", "VD_MAC_VALIDATION_SILENCE latency_seconds=12.000001", 1),
+    "arm generic twenty-second summary": arm_base.replace("max_latency_seconds=12.000000", "max_latency_seconds=20.000000", 1),
+    "arm wrong geometry start": arm_base.replace("final_start_seconds=16.640000", "final_start_seconds=15.600000", 1),
+}.items():
+    assert_parser(fixture, "arm64", False)
+
+print("macOS architecture-specific validation parser mock fixtures passed")
+PY
 
 python3 - "$VALIDATOR" <<'PY'
 from pathlib import Path
@@ -133,157 +284,6 @@ for url, expected in fixtures.items():
 print('macOS exact same-repository asset URL fixtures passed')
 PY
 
-python3 - "$VALIDATOR" <<'PY'
-from pathlib import Path
-import re
-import sys
-
-validator = Path(sys.argv[1]).read_text(encoding='utf-8')
-for marker in (
-    "compute_units_by_architecture = {",
-    "'x86_64': 'cpuAndGPU',",
-    "'arm64': 'cpuAndNeuralEngine',",
-    "encoder_precision_by_architecture = {",
-    "'x86_64': 'fp16',",
-    "'arm64': 'int8',",
-    "begin_lines = re.findall(r'(?m)^VD_MAC_VALIDATION_BEGIN[^\\r\\n]*$', text)",
-    'begin = re.fullmatch(',
-    "begin.group('compute_units')",
-    "begin.group('encoder_precision')",
-    'exactly one VD_MAC_VALIDATION_BEGIN line',
-    'exactly architecture, compute_units, and encoder_precision',
-    "validation reported unsupported architecture",
-):
-    if marker not in validator:
-        raise SystemExit(f'validator is missing compute-policy marker: {marker}')
-
-compute_units_by_architecture = {
-    'x86_64': 'cpuAndGPU',
-    'arm64': 'cpuAndNeuralEngine',
-}
-encoder_precision_by_architecture = {
-    'x86_64': 'fp16',
-    'arm64': 'int8',
-}
-
-def accepted(marker: str, expected_architecture: str) -> bool:
-    begin_lines = re.findall(r'(?m)^VD_MAC_VALIDATION_BEGIN[^\r\n]*$', marker)
-    if len(begin_lines) != 1:
-        return False
-    begin = re.fullmatch(
-        r'VD_MAC_VALIDATION_BEGIN\s+architecture=(?P<architecture>[^\s]+)\s+'
-        r'compute_units=(?P<compute_units>[^\s]+)\s+'
-        r'encoder_precision=(?P<encoder_precision>[^\s]+)',
-        begin_lines[0],
-    )
-    if begin is None or expected_architecture not in compute_units_by_architecture:
-        return False
-    architecture = begin.group('architecture')
-    compute_units = begin.group('compute_units')
-    encoder_precision = begin.group('encoder_precision')
-    return (
-        architecture in compute_units_by_architecture
-        and architecture == expected_architecture
-        and compute_units == compute_units_by_architecture[expected_architecture]
-        and encoder_precision == encoder_precision_by_architecture[expected_architecture]
-    )
-
-fixtures = {
-    'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuAndGPU encoder_precision=fp16': ('x86_64', True),
-    'VD_MAC_VALIDATION_BEGIN architecture=arm64 compute_units=cpuAndNeuralEngine encoder_precision=int8': ('arm64', True),
-    'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuOnly encoder_precision=fp16': ('x86_64', False),
-    'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuAndNeuralEngine encoder_precision=int8': ('x86_64', False),
-    'VD_MAC_VALIDATION_BEGIN architecture=arm64 compute_units=cpuAndGPU encoder_precision=fp16': ('arm64', False),
-    'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuAndGPU encoder_precision=int8': ('x86_64', False),
-    'VD_MAC_VALIDATION_BEGIN architecture=arm64 compute_units=cpuAndNeuralEngine encoder_precision=fp16': ('arm64', False),
-    'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuAndGPU': ('x86_64', False),
-    'VD_MAC_VALIDATION_BEGIN architecture=powerpc64 compute_units=cpuAndGPU encoder_precision=fp16': ('powerpc64', False),
-    (
-        'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuAndGPU encoder_precision=fp16\n'
-        'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuAndGPU encoder_precision=fp16'
-    ): ('x86_64', False),
-    (
-        'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuAndGPU encoder_precision=fp16\n'
-        'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuOnly encoder_precision=fp16'
-    ): ('x86_64', False),
-    'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuAndGPU encoder_precision=fp16 model=default': ('x86_64', False),
-}
-for marker, (expected_architecture, expected) in fixtures.items():
-    actual = accepted(marker, expected_architecture)
-    if actual != expected:
-        raise SystemExit(
-            f'compute-policy fixture mismatch for {marker!r}: '
-            f'expected {expected}, got {actual}'
-        )
-print('macOS architecture-specific compute-policy fixtures passed')
-PY
-
-python3 - "$VALIDATOR" <<'PY'
-from pathlib import Path
-import re
-import sys
-
-validator = Path(sys.argv[1]).read_text(encoding='utf-8')
-for marker in (
-    "encoder_file_by_architecture = {",
-    "'x86_64': 'parakeet_unified_encoder.mlmodelc',",
-    "'arm64': 'parakeet_unified_encoder_int8.mlmodelc',",
-    "model_lines = re.findall(r'(?m)^VD_MAC_VALIDATION_MODEL[ \\t]+[^\\r\\n]*$', text)",
-    'model = re.fullmatch(',
-    "model.group('encoder_file')",
-    'exactly one VD_MAC_VALIDATION_MODEL line',
-    'exactly encoder_file',
-    'validation ran with encoder_file=',
-):
-    if marker not in validator:
-        raise SystemExit(f'validator is missing model-evidence marker: {marker}')
-
-encoder_file_by_architecture = {
-    'x86_64': 'parakeet_unified_encoder.mlmodelc',
-    'arm64': 'parakeet_unified_encoder_int8.mlmodelc',
-}
-
-def accepted_model(marker: str, expected_architecture: str) -> bool:
-    model_lines = re.findall(r'(?m)^VD_MAC_VALIDATION_MODEL[ \t]+[^\r\n]*$', marker)
-    if len(model_lines) != 1 or expected_architecture not in encoder_file_by_architecture:
-        return False
-    model = re.fullmatch(
-        r'VD_MAC_VALIDATION_MODEL\s+encoder_file=(?P<encoder_file>[^\s]+)',
-        model_lines[0],
-    )
-    return model is not None and model.group('encoder_file') == encoder_file_by_architecture[expected_architecture]
-
-fixtures = [
-    ('VD_MAC_VALIDATION_MODEL encoder_file=parakeet_unified_encoder.mlmodelc', 'x86_64', True),
-    ('VD_MAC_VALIDATION_MODEL encoder_file=parakeet_unified_encoder_int8.mlmodelc', 'arm64', True),
-    ('VD_MAC_VALIDATION_MODEL encoder_file=parakeet_unified_encoder_int8.mlmodelc', 'x86_64', False),
-    ('VD_MAC_VALIDATION_MODEL encoder_file=parakeet_unified_encoder.mlmodelc', 'arm64', False),
-    ('', 'x86_64', False),
-    (
-        'VD_MAC_VALIDATION_MODEL encoder_file=parakeet_unified_encoder.mlmodelc\n'
-        'VD_MAC_VALIDATION_MODEL encoder_file=parakeet_unified_encoder.mlmodelc',
-        'x86_64',
-        False,
-    ),
-    (
-        'VD_MAC_VALIDATION_MODEL encoder_file=parakeet_unified_encoder.mlmodelc\n'
-        'VD_MAC_VALIDATION_MODEL encoder_file=parakeet_unified_encoder_int8.mlmodelc',
-        'x86_64',
-        False,
-    ),
-    ('VD_MAC_VALIDATION_MODEL encoder_file=parakeet_unified_encoder.mlmodelc cache_path=shared', 'x86_64', False),
-    ('VD_MAC_VALIDATION_MODEL_PRELOAD seconds=1.0', 'x86_64', False),
-]
-for marker, expected_architecture, expected in fixtures:
-    actual = accepted_model(marker, expected_architecture)
-    if actual != expected:
-        raise SystemExit(
-            f'model-evidence fixture mismatch for {marker!r}: '
-            f'expected {expected}, got {actual}'
-        )
-print('macOS encoder-file evidence fixtures passed')
-PY
-
 download_start="$(grep -n '^download_asset()' "$VALIDATOR" | head -n 1 | cut -d: -f1)"
 download_end="$(grep -n '^assert_sha256()' "$VALIDATOR" | head -n 1 | cut -d: -f1)"
 if [[ -z "$download_start" || -z "$download_end" || "$download_end" -le "$download_start" ]]; then
@@ -322,7 +322,7 @@ lsof_line="$(grep -n 'lsof -t -a -d txt -- \"\$APP_MAIN\"' "$VALIDATOR" | head -
 diagnostics_line="$(grep -n '^[[:space:]]*show_launch_diagnostics$' "$VALIDATOR" | head -n 1 | cut -d: -f1)"
 cleanup_line="$(grep -n 'kill \"\$app_pid\"' "$VALIDATOR" | head -n 1 | cut -d: -f1)"
 runner_line="$(grep -n 'run-mac-validation\.sh.*--max-latency-seconds' "$VALIDATOR" | head -n 1 | cut -d: -f1)"
-marker_parse_line="$(grep -n '^python3 - \"\$validation_log\"' "$VALIDATOR" | head -n 1 | cut -d: -f1)"
+marker_parse_line="$(grep -n '^parse_validation_log \"\$validation_log\"' "$VALIDATOR" | head -n 1 | cut -d: -f1)"
 if [[ -z "$scrub_line" || -z "$open_line" || -z "$lsof_line" || -z "$diagnostics_line" || -z "$cleanup_line" || -z "$runner_line" || -z "$marker_parse_line" || \
       "$scrub_line" -ge "$runner_line" || "$runner_line" -ge "$marker_parse_line" || \
       "$marker_parse_line" -ge "$open_line" || \
