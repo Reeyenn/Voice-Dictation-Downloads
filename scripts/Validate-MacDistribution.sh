@@ -92,13 +92,16 @@ begin = one("VD_MAC_VALIDATION_BEGIN")
 exact_fields(begin, {"architecture", "compute_units", "encoder_precision", "model"}, "begin")
 if begin["architecture"] != expected_architecture:
     raise SystemExit(f"validation ran as {begin['architecture']}, expected {expected_architecture}")
-expected_compute_units = "cpuOnly" if expected_architecture == "x86_64" else "cpuAndNeuralEngine"
+expected_compute_units = "cpuAndGPU" if expected_architecture == "x86_64" else "cpuAndNeuralEngine"
 if begin["compute_units"] != expected_compute_units:
     raise SystemExit(
         f"validation compute_units={begin['compute_units']!r}, expected {expected_compute_units!r}"
     )
-if begin["encoder_precision"] != "streaming_int8":
-    raise SystemExit("validation must use encoder_precision=streaming_int8")
+expected_encoder_precision = "streaming_fp16" if expected_architecture == "x86_64" else "streaming_int8"
+if begin["encoder_precision"] != expected_encoder_precision:
+    raise SystemExit(
+        f"validation must use encoder_precision={expected_encoder_precision}"
+    )
 if begin["model"] != "streaming_70_13_13":
     raise SystemExit("validation must use model=streaming_70_13_13")
 
@@ -110,7 +113,12 @@ if preload["mode"] != "streaming" or preload["cache"] != "compiled":
 
 model = one("VD_MAC_VALIDATION_MODEL")
 exact_fields(model, {"encoder_file"}, "model")
-if model["encoder_file"] != "parakeet_unified_encoder_streaming_70_13_13_int8.mlmodelc":
+expected_encoder_file = (
+    "parakeet_unified_encoder_streaming_70_13_13.mlmodelc"
+    if expected_architecture == "x86_64"
+    else "parakeet_unified_encoder_streaming_70_13_13_int8.mlmodelc"
+)
+if model["encoder_file"] != expected_encoder_file:
     raise SystemExit("validation selected an unexpected streaming encoder")
 
 expected_labels = ["cold-0", "warm-0", "cold-1", "warm-1", "cold-2", "warm-2"]
@@ -132,19 +140,19 @@ for index, case in enumerate(cases):
             "label",
             "audio_seconds",
             "session_load_seconds",
-            "latency_seconds",
-            "final_latency_seconds",
-            "total_seconds",
+            "processing_seconds",
+            "final_model_seconds",
+            "post_stop_seconds",
             "rss_megabytes",
             "wer",
         },
         f"case {label}",
     )
     number(case, "audio_seconds", label, positive=True)
-    number(case, "session_load_seconds", label, positive=True)
-    number(case, "latency_seconds", label, positive=True)
-    number(case, "final_latency_seconds", label, positive=True, maximum=maximum_latency)
-    number(case, "total_seconds", label, positive=True, maximum=maximum_latency)
+    number(case, "session_load_seconds", label, positive=True, maximum=maximum_latency)
+    number(case, "processing_seconds", label, positive=True)
+    number(case, "final_model_seconds", label, positive=True)
+    number(case, "post_stop_seconds", label, positive=True, maximum=maximum_latency)
     number(case, "rss_megabytes", label, positive=True)
     number(case, "wer", label, minimum=0, maximum=maximum_wer)
 
@@ -155,7 +163,7 @@ if silence["result"] != "no_audio":
 number(silence, "latency_seconds", "silence", positive=True, maximum=maximum_latency)
 
 cancel = one("VD_MAC_VALIDATION_CANCEL")
-allowed_cancel_fields = {"result", "fresh_session", "fresh_wer", "total_seconds"}
+allowed_cancel_fields = {"result", "fresh_session", "fresh_wer", "post_stop_seconds"}
 if set(cancel) not in (
     {"result", "fresh_session", "fresh_wer"},
     allowed_cancel_fields,
@@ -164,8 +172,8 @@ if set(cancel) not in (
 if cancel["result"] != "cancelled" or cancel["fresh_session"] != "ready":
     raise SystemExit("cancellation must report result=cancelled fresh_session=ready")
 number(cancel, "fresh_wer", "fresh-after-cancel", minimum=0, maximum=maximum_wer)
-if "total_seconds" in cancel:
-    number(cancel, "total_seconds", "fresh-after-cancel", positive=True, maximum=maximum_latency)
+if "post_stop_seconds" in cancel:
+    number(cancel, "post_stop_seconds", "fresh-after-cancel", positive=True, maximum=maximum_latency)
 
 summary = one("VD_MAC_VALIDATION_SUMMARY")
 exact_fields(
@@ -196,8 +204,8 @@ print(
     f"model_preload_seconds={float(preload['seconds']):.3f} "
     f"cases={len(cases)} "
     f"worst_wer={max(float(case['wer']) for case in cases):.3f} "
-    f"worst_total_seconds={max(float(case['total_seconds']) for case in cases):.3f} "
-    f"worst_final_latency_seconds={max(float(case['final_latency_seconds']) for case in cases):.3f} "
+    f"worst_post_stop_seconds={max(float(case['post_stop_seconds']) for case in cases):.3f} "
+    f"worst_final_model_seconds={max(float(case['final_model_seconds']) for case in cases):.3f} "
     "silence=no_audio cancellation=cancelled"
 )
 PY
