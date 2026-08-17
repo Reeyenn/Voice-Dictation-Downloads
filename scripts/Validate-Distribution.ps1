@@ -78,6 +78,14 @@ $vcRedistPins = @{
         ProductName = 'Microsoft Visual C++ 2015-2022 Redistributable (x64) - 14.44.35211'
         OriginalFilename = 'VC_redist.x64.exe'
     }
+    '0.9.0' = [pscustomobject]@{
+        Sha256 = 'cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b'
+        Size = 25635768L
+        ProductVersion = '14.44.35211.0'
+        FileVersion = '14.44.35211.0'
+        ProductName = 'Microsoft Visual C++ 2015-2022 Redistributable (x64) - 14.44.35211'
+        OriginalFilename = 'VC_redist.x64.exe'
+    }
 }
 
 function Fail([string]$Message) {
@@ -619,12 +627,41 @@ function Assert-PlatformTestsResults([string]$ResultsDirectory, [int]$MinimumTes
     Write-Host "Platform.Tests TRX passed: total=$total executed=$executed passed=$passed failed=$failed notExecuted=$notExecuted."
 }
 
+function Assert-PlatformTestsArchiveBoundary([object[]]$Entries) {
+    $nestedArchives = @($Entries | Where-Object {
+        $_.Name -match '(?i)(?:^|/)[^/]*\.zip(?:/|$)'
+    })
+    if ($nestedArchives.Count -gt 0) {
+        Fail "Platform.Tests ZIP must not contain nested ZIP archives: $($nestedArchives.Name -join ', ')"
+    }
+
+    # The test host needs the managed test-platform assemblies and the selected
+    # Whisper runtime only. Coverage/instrumentation payloads for another
+    # operating system or architecture are neither required nor trusted.
+    $foreignNativePaths = @($Entries | Where-Object {
+        $_.Name -match '(?i)(?:^|/)(?:alpine|macos|osx|ubuntu|linux|freebsd|x86|x64|arm64|CodeCoverage)(?:/|$)' -or
+        $_.Name -match '(?i)(?:^|/)(?:MicrosoftInstrumentationEngine|msdia|covrun|libCoverage|libInstrumentation)' -or
+        $_.Name -match '(?i)\.(?:so|dylib|a|o)$'
+    })
+    if ($foreignNativePaths.Count -gt 0) {
+        Fail "Platform.Tests ZIP contains foreign native test tooling: $($foreignNativePaths.Name -join ', ')"
+    }
+
+    $unexpectedExecutables = @($Entries | Where-Object {
+        $_.Name -match '(?i)\.exe$' -and [System.IO.Path]::GetFileName($_.Name) -cne 'VoiceDictation.exe'
+    })
+    if ($unexpectedExecutables.Count -gt 0) {
+        Fail "Platform.Tests ZIP contains an executable outside the app contract: $($unexpectedExecutables.Name -join ', ')"
+    }
+}
+
 function Assert-PlatformTestsArchive(
     [string]$Path,
     [ValidateSet('x64', 'arm64')][string]$ExpectedArchitecture,
     [bool]$ExecuteTests = $true
 ) {
     $entries = @(Get-ZipEntries $Path | Where-Object { -not $_.IsDirectory })
+    Assert-PlatformTestsArchiveBoundary $entries
     $badFiles = @($entries | Where-Object {
         $_.Name -match '(?i)\.(?:pdb|xml|cs|csproj|sln|props|targets)$'
     })
@@ -1162,7 +1199,7 @@ if ($Mode -eq 'Package') {
     if (-not [string]::IsNullOrWhiteSpace($Arm64PortableAssetName)) {
         Assert-AssetName $Arm64PortableAssetName 'ARM64 portable' $Version
         if ($Arm64PortableAssetName -cne "Voice-Dictation-Windows-arm64-$Version-Portable.zip") {
-            Fail 'ARM64 portable asset must use the exact versioned v0.8 name.'
+            Fail 'ARM64 portable asset must use the exact asset name for the selected version.'
         }
     }
 } elseif ([string]::IsNullOrWhiteSpace($CandidateRoot)) {
