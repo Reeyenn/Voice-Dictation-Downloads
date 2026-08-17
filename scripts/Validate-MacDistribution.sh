@@ -31,7 +31,7 @@ require_tool() {
   command -v "$1" >/dev/null 2>&1 || fail "required tool is missing: $1"
 }
 
-for tool in curl python3 unzip shasum plutil codesign lipo file open pgrep; do
+for tool in curl python3 unzip shasum plutil codesign lipo file open lsof; do
   require_tool "$tool"
 done
 
@@ -295,19 +295,34 @@ done < <(find "$SPARKLE_ROOT" -type f -print0)
 codesign --verify --deep --strict --verbose=2 "$APP_PATH" >/dev/null 2>&1 || fail 'app code signature verification failed'
 
 launch_log="$WORK_ROOT/app-launch.log"
+redact_diagnostics() {
+  sed -E \
+    -e 's/(Bearer[[:space:]]+)[^[:space:]]+/\1[REDACTED]/g' \
+    -e 's/((GITHUB_TOKEN|GH_TOKEN|GITHUB_API_TOKEN|ACTIONS_RUNTIME_TOKEN|RUNNER_TOKEN|TOKEN|AUTH_HEADER)=)[^[:space:]]+/\1[REDACTED]/g'
+}
+show_launch_diagnostics() {
+  {
+    echo 'LaunchServices process diagnostics:'
+    ps -axo pid,ppid,comm,args 2>/dev/null |
+      awk -v app_main="$APP_MAIN" 'index($0, app_main) { print }' |
+      head -n 20 |
+      redact_diagnostics || true
+    echo 'Recent LaunchServices output (redacted):'
+    tail -n 40 "$launch_log" 2>/dev/null | redact_diagnostics || true
+  } >&2
+}
 open -n "$APP_PATH" >"$launch_log" 2>&1 &
 open_pid=$!
 sleep 8
-if ! pgrep -f "$APP_MAIN" >/dev/null 2>&1; then
+app_pids="$(lsof -t -a -d txt -- "$APP_MAIN" 2>/dev/null | awk '/^[0-9]+$/ { print }' | sort -n -u || true)"
+if [[ -z "$app_pids" ]]; then
   wait "$open_pid" 2>/dev/null || true
-  fail "app did not remain running after LaunchServices start: $(tr '\n' ' ' < "$launch_log")"
+  show_launch_diagnostics
+  fail 'app did not remain running after LaunchServices start; see bounded diagnostics above'
 fi
-app_pids="$(pgrep -f "$APP_MAIN" || true)"
-if [[ -n "$app_pids" ]]; then
-  while IFS= read -r app_pid; do
-    [[ -n "$app_pid" ]] && kill "$app_pid" 2>/dev/null || true
-  done <<<"$app_pids"
-fi
+while IFS= read -r app_pid; do
+  [[ "$app_pid" =~ ^[0-9]+$ ]] && kill "$app_pid" 2>/dev/null || true
+done <<<"$app_pids"
 wait "$open_pid" 2>/dev/null || true
 echo "macOS app launch policy and runtime start passed for $(uname -m)."
 
