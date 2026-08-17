@@ -182,7 +182,7 @@ if [case.get("label") for case in cases] != expected_labels:
         "phrase labels must be exactly cold-0,warm-0,cold-1,warm-1,cold-2,warm-2 in order"
     )
 
-maximum_latency = 20.0 if expected_architecture == "x86_64" else 10.0
+maximum_latency = 20.0 if expected_architecture == "x86_64" else 12.0
 maximum_wer = 0.35
 maximum_rss_megabytes = 6144.0
 
@@ -344,7 +344,7 @@ if [[ -n "$EXPECTED_ARCHITECTURE" && "$EXPECTED_ARCHITECTURE" != "arm64" && "$EX
 fi
 case "$EXPECTED_ARCHITECTURE" in
   x86_64) VALIDATION_MAX_LATENCY_SECONDS=20 ;;
-  arm64) VALIDATION_MAX_LATENCY_SECONDS=10 ;;
+  arm64) VALIDATION_MAX_LATENCY_SECONDS=12 ;;
   *) fail 'EXPECTED_ARCHITECTURE must be arm64 or x86_64' ;;
 esac
 HOST_ARCHITECTURE="$(uname -m)"

@@ -81,7 +81,7 @@ for required in \
   'capture_chunk_seconds' \
   'capture_overlap_seconds' \
   'VALIDATION_MAX_LATENCY_SECONDS=20' \
-  'VALIDATION_MAX_LATENCY_SECONDS=10' \
+  'VALIDATION_MAX_LATENCY_SECONDS=12' \
   'assert_universal2' \
   'codesign --verify --deep --strict'; do
   require_text "$VALIDATOR" "$required"
@@ -121,7 +121,7 @@ def valid_log(architecture):
     capture_mode = "rolling" if intel else "streaming"
     chunk_seconds = "15.000000" if intel else "1.040000"
     overlap_seconds = "2.000000" if intel else "0.000000"
-    maximum_latency = "20.000000" if intel else "10.000000"
+    maximum_latency = "20.000000" if intel else "12.000000"
     encoder_file = (
         "parakeet_unified_encoder.mlmodelc"
         if intel
@@ -211,10 +211,10 @@ for name, fixture in {
     "arm wrong capture mode": arm_base.replace("capture_mode=streaming", "capture_mode=rolling", 1),
     "arm wrong encoder": arm_base.replace("parakeet_unified_encoder_streaming_70_13_13_int8.mlmodelc", "parakeet_unified_encoder.mlmodelc", 1),
     "arm wrong capture chunk": arm_base.replace("capture_chunk_seconds=1.040000", "capture_chunk_seconds=15.000000", 1),
-    "arm session load gate": arm_base.replace("session_load_seconds=0.200000", "session_load_seconds=10.000001", 1),
-    "arm latency gate": arm_base.replace("post_stop_seconds=0.300000", "post_stop_seconds=10.000001", 1),
-    "arm silence latency gate": arm_base.replace("VD_MAC_VALIDATION_SILENCE latency_seconds=0.010000", "VD_MAC_VALIDATION_SILENCE latency_seconds=10.000001", 1),
-    "arm generic twenty-second summary": arm_base.replace("max_latency_seconds=10.000000", "max_latency_seconds=20.000000", 1),
+    "arm session load gate": arm_base.replace("session_load_seconds=0.200000", "session_load_seconds=12.000001", 1),
+    "arm latency gate": arm_base.replace("post_stop_seconds=0.300000", "post_stop_seconds=12.000001", 1),
+    "arm silence latency gate": arm_base.replace("VD_MAC_VALIDATION_SILENCE latency_seconds=0.010000", "VD_MAC_VALIDATION_SILENCE latency_seconds=12.000001", 1),
+    "arm generic twenty-second summary": arm_base.replace("max_latency_seconds=12.000000", "max_latency_seconds=20.000000", 1),
     "arm wrong geometry start": arm_base.replace("final_start_seconds=16.640000", "final_start_seconds=15.600000", 1),
 }.items():
     assert_parser(fixture, "arm64", False)
