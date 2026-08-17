@@ -13,9 +13,9 @@ draft or published release in this repository, then manually dispatches the
 validation workflow with the exact SHA-256 values. The workflow downloads only
 those assets from this repository with its automatically scoped `GITHUB_TOKEN`,
 validates them, compiles the installer, and uploads a short-lived Actions
-artifact. The workflow has only the repository `contents: write` permission
-because GitHub's draft-release asset endpoint requires that scope; the script
-uses it for GET requests only and clears token environment variables
+artifact. Both validation workflows have only the repository `contents: write`
+permission because GitHub's draft-release asset endpoint requires that scope;
+the scripts use it for GET requests only and clear token environment variables
 before launching any downloaded app, test host, compiler, or installer. It
 does not run on pushes or pull requests and it cannot access the private source
 repository.

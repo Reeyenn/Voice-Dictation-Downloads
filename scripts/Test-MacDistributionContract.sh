@@ -18,6 +18,7 @@ require_text() {
 
 for required in \
   'workflow_dispatch:' \
+  'contents: write' \
   'macos-15-intel' \
   'runs-on: macos-15' \
   'app_zip_sha256' \
@@ -25,6 +26,10 @@ for required in \
   'Validate-MacDistribution.sh'; do
   require_text "$WORKFLOW" "$required"
 done
+
+if grep -Fq 'contents: read' "$WORKFLOW"; then
+  fail 'macOS draft-release validation requires contents: write; contents: read cannot see draft releases'
+fi
 
 for required in \
   "Voice-Dictation-macOS-\$VERSION.zip" \

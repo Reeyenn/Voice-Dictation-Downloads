@@ -22,7 +22,8 @@ foreach ($needle in @('default: 0.9.0','default: bootstrap-v0.9.0','x64_portable
 foreach ($needle in @('default: 0.9.0','default: bootstrap-v0.9.0','app_zip_sha256','validation_bundle_sha256')) { Has $macWorkflow $needle 'macOS workflow v0.9 dispatch contract' }
 foreach ($needle in @('Voice-Dictation-macOS-$VERSION.zip','Voice-Dictation-macOS-Universal-Validation-$VERSION.zip','bootstrap release must remain a draft','Voice-Dictation-MacValidation/VoiceDictationMacValidation','Voice-Dictation-MacValidation/run-mac-validation.sh','VD_MAC_VALIDATION_BEGIN','VD_MAC_VALIDATION_MODEL_PRELOAD','VD_MAC_VALIDATION_CASE','VD_MAC_VALIDATION_SILENCE','--max-latency-seconds 5','--max-wer 0.35','Universal 2','codesign --verify --deep --strict')) { Has $macValidator $needle 'macOS validator' }
 foreach ($needle in @('macos-15-intel','runs-on: macos-15','app_zip_sha256','validation_bundle_sha256','binary-only validation','assert_universal2','bash -n')) { Has $macContractTest $needle 'macOS contract test' }
-foreach ($needle in @('actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683','contents: read')) { Has $macWorkflow $needle 'macOS workflow' }
+foreach ($needle in @('actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683','contents: write')) { Has $macWorkflow $needle 'macOS workflow' }
+Lacks $macWorkflow 'contents: read' 'macOS workflow'
 Lacks $macWorkflow 'swift test' 'macOS workflow'
 Lacks $macWorkflow 'xcodebuild' 'macOS workflow'
 Lacks $macWorkflow 'Voice-Dictation.git' 'macOS workflow'
