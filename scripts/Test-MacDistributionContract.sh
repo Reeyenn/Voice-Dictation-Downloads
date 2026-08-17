@@ -143,11 +143,15 @@ for marker in (
     "compute_units_by_architecture = {",
     "'x86_64': 'cpuAndGPU',",
     "'arm64': 'cpuAndNeuralEngine',",
+    "encoder_precision_by_architecture = {",
+    "'x86_64': 'fp16',",
+    "'arm64': 'int8',",
     "begin_lines = re.findall(r'(?m)^VD_MAC_VALIDATION_BEGIN[^\\r\\n]*$', text)",
     'begin = re.fullmatch(',
     "begin.group('compute_units')",
+    "begin.group('encoder_precision')",
     'exactly one VD_MAC_VALIDATION_BEGIN line',
-    'exactly architecture and compute_units',
+    'exactly architecture, compute_units, and encoder_precision',
     "validation reported unsupported architecture",
 ):
     if marker not in validator:
@@ -157,6 +161,10 @@ compute_units_by_architecture = {
     'x86_64': 'cpuAndGPU',
     'arm64': 'cpuAndNeuralEngine',
 }
+encoder_precision_by_architecture = {
+    'x86_64': 'fp16',
+    'arm64': 'int8',
+}
 
 def accepted(marker: str, expected_architecture: str) -> bool:
     begin_lines = re.findall(r'(?m)^VD_MAC_VALIDATION_BEGIN[^\r\n]*$', marker)
@@ -164,36 +172,41 @@ def accepted(marker: str, expected_architecture: str) -> bool:
         return False
     begin = re.fullmatch(
         r'VD_MAC_VALIDATION_BEGIN\s+architecture=(?P<architecture>[^\s]+)\s+'
-        r'compute_units=(?P<compute_units>[^\s]+)',
+        r'compute_units=(?P<compute_units>[^\s]+)\s+'
+        r'encoder_precision=(?P<encoder_precision>[^\s]+)',
         begin_lines[0],
     )
     if begin is None or expected_architecture not in compute_units_by_architecture:
         return False
     architecture = begin.group('architecture')
     compute_units = begin.group('compute_units')
+    encoder_precision = begin.group('encoder_precision')
     return (
         architecture in compute_units_by_architecture
         and architecture == expected_architecture
         and compute_units == compute_units_by_architecture[expected_architecture]
+        and encoder_precision == encoder_precision_by_architecture[expected_architecture]
     )
 
 fixtures = {
-    'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuAndGPU': ('x86_64', True),
-    'VD_MAC_VALIDATION_BEGIN architecture=arm64 compute_units=cpuAndNeuralEngine': ('arm64', True),
-    'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuOnly': ('x86_64', False),
-    'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuAndNeuralEngine': ('x86_64', False),
-    'VD_MAC_VALIDATION_BEGIN architecture=arm64 compute_units=cpuAndGPU': ('arm64', False),
-    'VD_MAC_VALIDATION_BEGIN architecture=x86_64': ('x86_64', False),
-    'VD_MAC_VALIDATION_BEGIN architecture=powerpc64 compute_units=cpuAndGPU': ('powerpc64', False),
+    'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuAndGPU encoder_precision=fp16': ('x86_64', True),
+    'VD_MAC_VALIDATION_BEGIN architecture=arm64 compute_units=cpuAndNeuralEngine encoder_precision=int8': ('arm64', True),
+    'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuOnly encoder_precision=fp16': ('x86_64', False),
+    'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuAndNeuralEngine encoder_precision=int8': ('x86_64', False),
+    'VD_MAC_VALIDATION_BEGIN architecture=arm64 compute_units=cpuAndGPU encoder_precision=fp16': ('arm64', False),
+    'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuAndGPU encoder_precision=int8': ('x86_64', False),
+    'VD_MAC_VALIDATION_BEGIN architecture=arm64 compute_units=cpuAndNeuralEngine encoder_precision=fp16': ('arm64', False),
+    'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuAndGPU': ('x86_64', False),
+    'VD_MAC_VALIDATION_BEGIN architecture=powerpc64 compute_units=cpuAndGPU encoder_precision=fp16': ('powerpc64', False),
     (
-        'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuAndGPU\n'
-        'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuAndGPU'
+        'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuAndGPU encoder_precision=fp16\n'
+        'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuAndGPU encoder_precision=fp16'
     ): ('x86_64', False),
     (
-        'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuAndGPU\n'
-        'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuOnly'
+        'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuAndGPU encoder_precision=fp16\n'
+        'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuOnly encoder_precision=fp16'
     ): ('x86_64', False),
-    'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuAndGPU model=default': ('x86_64', False),
+    'VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuAndGPU encoder_precision=fp16 model=default': ('x86_64', False),
 }
 for marker, (expected_architecture, expected) in fixtures.items():
     actual = accepted(marker, expected_architecture)

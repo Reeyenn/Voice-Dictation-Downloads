@@ -320,6 +320,10 @@ compute_units_by_architecture = {
     'x86_64': 'cpuAndGPU',
     'arm64': 'cpuAndNeuralEngine',
 }
+encoder_precision_by_architecture = {
+    'x86_64': 'fp16',
+    'arm64': 'int8',
+}
 begin_lines = re.findall(r'(?m)^VD_MAC_VALIDATION_BEGIN[^\r\n]*$', text)
 if len(begin_lines) != 1:
     raise SystemExit(
@@ -328,12 +332,13 @@ if len(begin_lines) != 1:
     )
 begin = re.fullmatch(
     r'VD_MAC_VALIDATION_BEGIN\s+architecture=(?P<architecture>[^\s]+)\s+'
-    r'compute_units=(?P<compute_units>[^\s]+)',
+    r'compute_units=(?P<compute_units>[^\s]+)\s+'
+    r'encoder_precision=(?P<encoder_precision>[^\s]+)',
     begin_lines[0],
 )
 if begin is None:
     raise SystemExit(
-        'validation output begin marker must contain exactly architecture and compute_units'
+        'validation output begin marker must contain exactly architecture, compute_units, and encoder_precision'
     )
 preload = re.search(r'VD_MAC_VALIDATION_MODEL_PRELOAD\s+seconds=([0-9]+(?:\.[0-9]+)?)', text)
 cases = re.findall(r'VD_MAC_VALIDATION_CASE\s+label=([^\s]+).*?latency_seconds=([0-9]+(?:\.[0-9]+)?)\s+wer=([0-9]+(?:\.[0-9]+)?)', text)
@@ -341,6 +346,7 @@ silence = re.search(r'VD_MAC_VALIDATION_SILENCE\s+result=no_audio', text)
 summary = re.search(r'VD_MAC_VALIDATION_SUMMARY\s+status=pass\b', text)
 reported_architecture = begin.group('architecture')
 reported_compute_units = begin.group('compute_units')
+reported_encoder_precision = begin.group('encoder_precision')
 if expected_architecture not in compute_units_by_architecture:
     raise SystemExit(f'unsupported expected architecture: {expected_architecture}')
 if reported_architecture not in compute_units_by_architecture:
@@ -352,6 +358,12 @@ if reported_compute_units != expected_compute_units:
     raise SystemExit(
         f'validation ran with compute_units={reported_compute_units}, '
         f'expected {expected_compute_units} for {expected_architecture}'
+    )
+expected_encoder_precision = encoder_precision_by_architecture[expected_architecture]
+if reported_encoder_precision != expected_encoder_precision:
+    raise SystemExit(
+        f'validation ran with encoder_precision={reported_encoder_precision}, '
+        f'expected {expected_encoder_precision} for {expected_architecture}'
     )
 if preload is None:
     raise SystemExit('validation output is missing model preload seconds')
