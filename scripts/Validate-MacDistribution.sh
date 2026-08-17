@@ -89,7 +89,7 @@ def number(record, key, label, *, positive=False, minimum=None, maximum=None):
     return value
 
 begin = one("VD_MAC_VALIDATION_BEGIN")
-exact_fields(begin, {"architecture", "compute_units", "encoder_precision", "model"}, "begin")
+exact_fields(begin, {"architecture", "compute_units", "encoder_precision", "model", "capture_mode"}, "begin")
 if begin["architecture"] != expected_architecture:
     raise SystemExit(f"validation ran as {begin['architecture']}, expected {expected_architecture}")
 expected_compute_units = "cpuAndGPU" if expected_architecture == "x86_64" else "cpuAndNeuralEngine"
@@ -97,29 +97,38 @@ if begin["compute_units"] != expected_compute_units:
     raise SystemExit(
         f"validation compute_units={begin['compute_units']!r}, expected {expected_compute_units!r}"
     )
-expected_encoder_precision = "streaming_fp16" if expected_architecture == "x86_64" else "streaming_int8"
+expected_encoder_precision = "fp16" if expected_architecture == "x86_64" else "streaming_int8"
 if begin["encoder_precision"] != expected_encoder_precision:
     raise SystemExit(
         f"validation must use encoder_precision={expected_encoder_precision}"
     )
-if begin["model"] != "streaming_70_13_13":
-    raise SystemExit("validation must use model=streaming_70_13_13")
+expected_model = "offline_15_2" if expected_architecture == "x86_64" else "streaming_70_13_13"
+if begin["model"] != expected_model:
+    raise SystemExit(f"validation must use model={expected_model}")
+expected_capture_mode = "rolling" if expected_architecture == "x86_64" else "streaming"
+if begin["capture_mode"] != expected_capture_mode:
+    raise SystemExit(f"validation must use capture_mode={expected_capture_mode}")
 
 preload = one("VD_MAC_VALIDATION_MODEL_PRELOAD")
 exact_fields(preload, {"seconds", "mode", "cache"}, "model preload")
+preload_seconds_raw = preload.get("seconds", "")
+if re.fullmatch(r"(?:0|[1-9][0-9]*)\.[0-9]{4,}", preload_seconds_raw) is None:
+    raise SystemExit("model preload seconds must use at least four decimal places")
 number(preload, "seconds", "model preload", positive=True)
-if preload["mode"] != "streaming" or preload["cache"] != "compiled":
-    raise SystemExit("model preload must report mode=streaming cache=compiled")
+if preload["mode"] != expected_capture_mode or preload["cache"] != "compiled":
+    raise SystemExit(
+        f"model preload must report mode={expected_capture_mode} cache=compiled"
+    )
 
 model = one("VD_MAC_VALIDATION_MODEL")
 exact_fields(model, {"encoder_file"}, "model")
 expected_encoder_file = (
-    "parakeet_unified_encoder_streaming_70_13_13.mlmodelc"
+    "parakeet_unified_encoder.mlmodelc"
     if expected_architecture == "x86_64"
     else "parakeet_unified_encoder_streaming_70_13_13_int8.mlmodelc"
 )
 if model["encoder_file"] != expected_encoder_file:
-    raise SystemExit("validation selected an unexpected streaming encoder")
+    raise SystemExit("validation selected an unexpected architecture-specific encoder")
 
 expected_labels = ["cold-0", "warm-0", "cold-1", "warm-1", "cold-2", "warm-2"]
 cases = records["VD_MAC_VALIDATION_CASE"]
@@ -130,8 +139,17 @@ if [case.get("label") for case in cases] != expected_labels:
         "phrase labels must be exactly cold-0,warm-0,cold-1,warm-1,cold-2,warm-2 in order"
     )
 
-maximum_latency = 5.0
+maximum_latency = 10.0 if expected_architecture == "x86_64" else 5.0
 maximum_wer = 0.35
+minimum_rss_megabytes = 512.0
+maximum_rss_megabytes = 6144.0
+
+def timing(record, key, label, *, maximum=None):
+    raw = record.get(key, "")
+    if re.fullmatch(r"(?:0|[1-9][0-9]*)\.[0-9]{4,}", raw) is None:
+        raise SystemExit(f"{label} {key} must use at least four decimal places")
+    return number(record, key, label, positive=True, maximum=maximum)
+
 for index, case in enumerate(cases):
     label = case["label"]
     exact_fields(
@@ -148,19 +166,26 @@ for index, case in enumerate(cases):
         },
         f"case {label}",
     )
-    number(case, "audio_seconds", label, positive=True)
-    number(case, "session_load_seconds", label, positive=True, maximum=maximum_latency)
-    number(case, "processing_seconds", label, positive=True)
-    number(case, "final_model_seconds", label, positive=True)
-    number(case, "post_stop_seconds", label, positive=True, maximum=maximum_latency)
-    number(case, "rss_megabytes", label, positive=True)
+    timing(case, "audio_seconds", label)
+    timing(case, "session_load_seconds", label, maximum=maximum_latency)
+    timing(case, "processing_seconds", label)
+    timing(case, "final_model_seconds", label)
+    timing(case, "post_stop_seconds", label, maximum=maximum_latency)
+    number(
+        case,
+        "rss_megabytes",
+        label,
+        positive=True,
+        minimum=minimum_rss_megabytes,
+        maximum=maximum_rss_megabytes,
+    )
     number(case, "wer", label, minimum=0, maximum=maximum_wer)
 
 silence = one("VD_MAC_VALIDATION_SILENCE")
 exact_fields(silence, {"result", "latency_seconds"}, "silence")
 if silence["result"] != "no_audio":
     raise SystemExit("silence check must report result=no_audio")
-number(silence, "latency_seconds", "silence", positive=True, maximum=maximum_latency)
+timing(silence, "latency_seconds", "silence", maximum=maximum_latency)
 
 cancel = one("VD_MAC_VALIDATION_CANCEL")
 allowed_cancel_fields = {"result", "fresh_session", "fresh_wer", "post_stop_seconds"}
@@ -173,7 +198,7 @@ if cancel["result"] != "cancelled" or cancel["fresh_session"] != "ready":
     raise SystemExit("cancellation must report result=cancelled fresh_session=ready")
 number(cancel, "fresh_wer", "fresh-after-cancel", minimum=0, maximum=maximum_wer)
 if "post_stop_seconds" in cancel:
-    number(cancel, "post_stop_seconds", "fresh-after-cancel", positive=True, maximum=maximum_latency)
+    timing(cancel, "post_stop_seconds", "fresh-after-cancel", maximum=maximum_latency)
 
 summary = one("VD_MAC_VALIDATION_SUMMARY")
 exact_fields(
@@ -183,21 +208,30 @@ exact_fields(
         "gated_rows",
         "max_latency_seconds",
         "max_wer",
-        "streaming_chunk_seconds",
-        "streaming_overlap_seconds",
+        "capture_mode",
+        "capture_chunk_seconds",
+        "capture_overlap_seconds",
     },
     "summary",
 )
 if summary["status"] != "pass" or summary["gated_rows"] != "6":
     raise SystemExit("summary must report status=pass gated_rows=6")
 if number(summary, "max_latency_seconds", "summary") != maximum_latency:
-    raise SystemExit("summary max_latency_seconds must be 5")
+    raise SystemExit(f"summary max_latency_seconds must be {maximum_latency:g}")
 if number(summary, "max_wer", "summary") != maximum_wer:
     raise SystemExit("summary max_wer must be 0.35")
-if number(summary, "streaming_chunk_seconds", "summary") != 1:
-    raise SystemExit("summary streaming_chunk_seconds must be 1")
-if number(summary, "streaming_overlap_seconds", "summary") != 0:
-    raise SystemExit("summary streaming_overlap_seconds must be 0")
+if summary["capture_mode"] != expected_capture_mode:
+    raise SystemExit(f"summary capture_mode must be {expected_capture_mode}")
+expected_chunk_seconds = 15.0 if expected_architecture == "x86_64" else 1.04
+expected_overlap_seconds = 2.0 if expected_architecture == "x86_64" else 0.0
+if number(summary, "capture_chunk_seconds", "summary") != expected_chunk_seconds:
+    raise SystemExit(
+        f"summary capture_chunk_seconds must be {expected_chunk_seconds:g}"
+    )
+if number(summary, "capture_overlap_seconds", "summary") != expected_overlap_seconds:
+    raise SystemExit(
+        f"summary capture_overlap_seconds must be {expected_overlap_seconds:g}"
+    )
 
 print(
     "Mac validation measurements: "
@@ -231,7 +265,7 @@ APP_SHA256="$(printf '%s' "$3" | tr '[:upper:]' '[:lower:]')"
 VALIDATION_SHA256="$(printf '%s' "$4" | tr '[:upper:]' '[:lower:]')"
 REPOSITORY="${GITHUB_REPOSITORY:-}"
 TOKEN="${GITHUB_TOKEN:-}"
-EXPECTED_ARCHITECTURE="${EXPECTED_ARCHITECTURE:-}"
+EXPECTED_ARCHITECTURE="${EXPECTED_ARCHITECTURE:-$(uname -m)}"
 MINIMUM_MACOS="${MINIMUM_MACOS:-15.6}"
 
 fail() {
@@ -247,7 +281,7 @@ require_tool() {
   command -v "$1" >/dev/null 2>&1 || fail "required tool is missing: $1"
 }
 
-for tool in curl python3 unzip shasum plutil codesign lipo file open lsof; do
+for tool in curl python3 unzip shasum plutil codesign lipo file open lsof sysctl; do
   require_tool "$tool"
 done
 
@@ -259,6 +293,17 @@ done
 [[ -n "$TOKEN" ]] || fail 'GITHUB_TOKEN is required to read the exact bootstrap release'
 if [[ -n "$EXPECTED_ARCHITECTURE" && "$EXPECTED_ARCHITECTURE" != "arm64" && "$EXPECTED_ARCHITECTURE" != "x86_64" ]]; then
   fail 'EXPECTED_ARCHITECTURE must be arm64 or x86_64'
+fi
+if [[ "$EXPECTED_ARCHITECTURE" == 'x86_64' ]]; then
+  VALIDATION_MAX_LATENCY_SECONDS=10
+else
+  VALIDATION_MAX_LATENCY_SECONDS=5
+fi
+HOST_ARCHITECTURE="$(uname -m)"
+[[ "$HOST_ARCHITECTURE" == "$EXPECTED_ARCHITECTURE" ]] || fail "host architecture $HOST_ARCHITECTURE does not match expected $EXPECTED_ARCHITECTURE"
+if [[ "$EXPECTED_ARCHITECTURE" == 'x86_64' ]]; then
+  translated="$(sysctl -in sysctl.proc_translated 2>/dev/null || true)"
+  [[ "$translated" != '1' ]] || fail 'Intel validation must not run under Rosetta translation'
 fi
 
 case "$MINIMUM_MACOS" in
@@ -521,7 +566,7 @@ chmod +x "$VALIDATION_EXE" "$VALIDATION_RUNNER"
 
 validation_log="$WORK_ROOT/mac-validation.log"
 set +e
-(cd "$VALIDATION_DIR" && ./run-mac-validation.sh --max-latency-seconds 5 --max-wer 0.35) 2>&1 | tee "$validation_log"
+(cd "$VALIDATION_DIR" && ./run-mac-validation.sh --max-latency-seconds "$VALIDATION_MAX_LATENCY_SECONDS" --max-wer 0.35) 2>&1 | tee "$validation_log"
 validation_status=${PIPESTATUS[0]}
 set -e
 [[ "$validation_status" -eq 0 ]] || fail "Swift validation bundle exited with $validation_status"

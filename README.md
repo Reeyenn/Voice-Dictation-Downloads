@@ -123,36 +123,42 @@ actual LaunchServices start on each host.
 The validation ZIP must contain the root
 `Voice-Dictation-MacValidation/VoiceDictationMacValidation` executable and
 `run-mac-validation.sh`. The packaged launcher invokes the executable on each
-native host with fixed WER/latency gates, and it must emit the validator
-machine-readable records before exiting successfully:
+native host with fixed architecture-specific WER/latency gates, and it must
+emit the validator machine-readable records before exiting successfully:
 
 ```text
-VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuAndGPU encoder_precision=streaming_fp16 model=streaming_70_13_13
-VD_MAC_VALIDATION_BEGIN architecture=arm64 compute_units=cpuAndNeuralEngine encoder_precision=streaming_int8 model=streaming_70_13_13
-VD_MAC_VALIDATION_MODEL_PRELOAD seconds=<positive> mode=streaming cache=compiled
-VD_MAC_VALIDATION_MODEL encoder_file=<architecture-specific streaming encoder>
+VD_MAC_VALIDATION_BEGIN architecture=x86_64 compute_units=cpuAndGPU encoder_precision=fp16 model=offline_15_2 capture_mode=rolling
+VD_MAC_VALIDATION_BEGIN architecture=arm64 compute_units=cpuAndNeuralEngine encoder_precision=streaming_int8 model=streaming_70_13_13 capture_mode=streaming
+VD_MAC_VALIDATION_MODEL_PRELOAD seconds=<positive> mode=<rolling|streaming> cache=compiled
+VD_MAC_VALIDATION_MODEL encoder_file=<offline fp16 or streaming int8 encoder>
 VD_MAC_VALIDATION_CASE label=<cold-0|warm-0|cold-1|warm-1|cold-2|warm-2> audio_seconds=<positive> session_load_seconds=<positive> processing_seconds=<positive> final_model_seconds=<positive> post_stop_seconds=<positive> rss_megabytes=<positive> wer=<0..0.35>
 VD_MAC_VALIDATION_SILENCE result=no_audio latency_seconds=<positive>
 VD_MAC_VALIDATION_CANCEL result=cancelled fresh_session=ready fresh_wer=<0..0.35> [post_stop_seconds=<positive>]
-VD_MAC_VALIDATION_SUMMARY status=pass gated_rows=6 max_latency_seconds=5 max_wer=0.35 streaming_chunk_seconds=1 streaming_overlap_seconds=0
+VD_MAC_VALIDATION_SUMMARY status=pass gated_rows=6 max_latency_seconds=<5|10> max_wer=0.35 capture_mode=<rolling|streaming> capture_chunk_seconds=<15|1.04> capture_overlap_seconds=<2|0>
 ```
 
 The public parser requires exactly six phrase records in the shown cold/warm
 order, parses their key/value fields independent of field order, and rejects
-duplicates, unknown fields, non-finite numbers, and unknown validation
-markers. It requires Intel to report `compute_units=cpuAndGPU` with
-`streaming_fp16` and `parakeet_unified_encoder_streaming_70_13_13.mlmodelc`;
-Apple silicon must report `compute_units=cpuAndNeuralEngine` with
-`streaming_int8` and `parakeet_unified_encoder_streaming_70_13_13_int8.mlmodelc`.
-Every phrase has positive finite audio, load, processing, final-model, and
-memory measurements; session load and `post_stop_seconds` must each be <= 5
-seconds on every case, while WER must be <= 0.35. This post-stop gate measures the final tail after a
-real-time-paced recording rather than incorrectly failing a healthy recording
-whose full audio processing necessarily exceeds five seconds. Silence must
-report `no_audio` within the same latency gate, and cancellation must leave a
-ready fresh session with a passing WER (and a passing post-stop value when
-emitted). The summary must report six gated rows with 1-second chunks and zero
-overlap. The workflow also rejects
+duplicates, unknown fields, non-finite numbers, low-precision timings, and
+unknown validation markers. Intel must report `compute_units=cpuAndGPU`,
+`encoder_precision=fp16`, `model=offline_15_2`, `capture_mode=rolling`,
+`parakeet_unified_encoder.mlmodelc`, and 15-second windows with 2 seconds of
+overlap. Apple silicon must report `compute_units=cpuAndNeuralEngine`,
+`encoder_precision=streaming_int8`, `model=streaming_70_13_13`,
+`capture_mode=streaming`,
+`parakeet_unified_encoder_streaming_70_13_13_int8.mlmodelc`, and 1.04-second
+chunks with no overlap. Every phrase has positive finite audio, load,
+processing, final-model, and post-stop timings with at least four decimal
+places, plus resident memory between 512 and 6144 MB; session load and
+`post_stop_seconds` must each be <= 10 seconds on Intel and <= 5 seconds on
+Apple silicon, while WER must be <= 0.35. This post-stop gate measures the
+final tail after a real-time-paced recording rather than incorrectly failing a
+healthy recording whose full audio processing necessarily exceeds five
+seconds. Silence must report `no_audio` within the same architecture-specific
+latency gate, and cancellation must leave a ready fresh session with a
+passing WER (and a passing post-stop value when emitted). The summary must
+report six gated rows with the architecture's rolling or streaming capture
+geometry. The workflow also rejects
 source, debug, `.git`, `.build`, and macOS metadata entries. It never invokes
 SwiftPM, Xcode, or a private source checkout; the precompiled validation
 executable owns model preload, local phrase synthesis, phrase WER, and no-audio
