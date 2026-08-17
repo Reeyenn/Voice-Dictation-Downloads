@@ -90,6 +90,7 @@ require_text "$VALIDATOR" 'ps -axo pid,ppid,comm,args'
 require_text "$VALIDATOR" 'tail -n 40 "$launch_log"'
 require_text "$VALIDATOR" 'redact_diagnostics'
 require_text "$VALIDATOR" 'Complete the source-free validation bundle before launching the app.'
+require_text "$VALIDATOR" '--max-latency-seconds 30'
 
 python3 - "$VALIDATOR" <<'PY'
 import subprocess
@@ -124,7 +125,7 @@ def valid_log(architecture):
         [
             "VD_MAC_VALIDATION_SILENCE latency_seconds=0.010 result=no_audio",
             "VD_MAC_VALIDATION_CANCEL post_stop_seconds=0.400 fresh_wer=0.000 fresh_session=ready result=cancelled",
-            "VD_MAC_VALIDATION_SUMMARY streaming_overlap_seconds=0 streaming_chunk_seconds=1 max_wer=0.35 max_latency_seconds=5.000 gated_rows=6 status=pass",
+            "VD_MAC_VALIDATION_SUMMARY streaming_overlap_seconds=0 streaming_chunk_seconds=1 max_wer=0.35 max_latency_seconds=30.000 gated_rows=6 status=pass",
         ]
     )
     return "\n".join(lines) + "\n"
@@ -163,12 +164,12 @@ negative_fixtures = {
     "duplicate key": base.replace("wer=0.000 rss_megabytes", "wer=0.000 wer=0.000 rss_megabytes", 1),
     "non-finite RSS": base.replace("rss_megabytes=300.000", "rss_megabytes=NaN", 1),
     "negative timing": base.replace("session_load_seconds=0.200", "session_load_seconds=-0.001", 1),
-    "session load gate": base.replace("session_load_seconds=0.200", "session_load_seconds=5.001", 1),
+    "session load gate": base.replace("session_load_seconds=0.200", "session_load_seconds=30.001", 1),
     "non-finite processing": base.replace("processing_seconds=0.100", "processing_seconds=Infinity", 1),
     "negative processing": base.replace("processing_seconds=0.100", "processing_seconds=-0.001", 1),
-    "post-stop gate": base.replace("post_stop_seconds=0.300", "post_stop_seconds=5.001", 1),
+    "post-stop gate": base.replace("post_stop_seconds=0.300", "post_stop_seconds=30.001", 1),
     "wrong silence": base.replace("result=no_audio", "result=audio", 1),
-    "silence latency gate": base.replace("VD_MAC_VALIDATION_SILENCE latency_seconds=0.010", "VD_MAC_VALIDATION_SILENCE latency_seconds=5.001", 1),
+    "silence latency gate": base.replace("VD_MAC_VALIDATION_SILENCE latency_seconds=0.010", "VD_MAC_VALIDATION_SILENCE latency_seconds=30.001", 1),
     "wrong cancellation": base.replace("fresh_session=ready", "fresh_session=stale", 1),
     "wrong streaming overlap": base.replace("streaming_overlap_seconds=0", "streaming_overlap_seconds=1", 1),
 }

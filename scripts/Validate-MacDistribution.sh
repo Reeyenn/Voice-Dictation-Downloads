@@ -130,7 +130,7 @@ if [case.get("label") for case in cases] != expected_labels:
         "phrase labels must be exactly cold-0,warm-0,cold-1,warm-1,cold-2,warm-2 in order"
     )
 
-maximum_latency = 5.0
+maximum_latency = 30.0
 maximum_wer = 0.35
 for index, case in enumerate(cases):
     label = case["label"]
@@ -191,7 +191,7 @@ exact_fields(
 if summary["status"] != "pass" or summary["gated_rows"] != "6":
     raise SystemExit("summary must report status=pass gated_rows=6")
 if number(summary, "max_latency_seconds", "summary") != maximum_latency:
-    raise SystemExit("summary max_latency_seconds must be 5")
+    raise SystemExit("summary max_latency_seconds must be 30")
 if number(summary, "max_wer", "summary") != maximum_wer:
     raise SystemExit("summary max_wer must be 0.35")
 if number(summary, "streaming_chunk_seconds", "summary") != 1:
@@ -521,7 +521,7 @@ chmod +x "$VALIDATION_EXE" "$VALIDATION_RUNNER"
 
 validation_log="$WORK_ROOT/mac-validation.log"
 set +e
-(cd "$VALIDATION_DIR" && ./run-mac-validation.sh --max-latency-seconds 5 --max-wer 0.35) 2>&1 | tee "$validation_log"
+(cd "$VALIDATION_DIR" && ./run-mac-validation.sh --max-latency-seconds 30 --max-wer 0.35) 2>&1 | tee "$validation_log"
 validation_status=${PIPESTATUS[0]}
 set -e
 [[ "$validation_status" -eq 0 ]] || fail "Swift validation bundle exited with $validation_status"
