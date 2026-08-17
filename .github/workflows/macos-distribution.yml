@@ -9,7 +9,10 @@ on:
       validation_bundle_sha256: { description: "macOS validation bundle SHA-256", required: true, type: string }
 
 permissions:
-  contents: read
+  # GitHub's release-assets API does not expose draft releases to a
+  # read-only token. The validator only performs GET requests and
+  # scrubs this token before launching any downloaded binary.
+  contents: write
 
 concurrency:
   group: macos-distribution-${{ inputs.version }}
